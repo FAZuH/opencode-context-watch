@@ -55,6 +55,8 @@ Config file (optional): `~/.config/opencode/opencode-context-watch.json`
 
 - The warning fires when **either** threshold is crossed (whichever comes first). Both thresholds can be active at once.
 - The percent threshold requires the model window to be known (cached by `system.transform` in the live TUI; pass `CONTEXT_WATCH_WINDOW` when using `opencode run`). When the window is unknown, only the tokens threshold applies; `{percent}`/`{window}` render `0`/`unknown`.
+- The plugin reads the config file once at load. To apply changes without restarting opencode, use the `context_watch_settings` tool with `action: reload`. It re-reads the file and env overrides and applies the new values live.
+- `disable` is a runtime-only gate. It survives a reload and resets when opencode restarts. It is not a config key.
 
 ### Configuration errors
 
@@ -65,6 +67,7 @@ If the config file or an env override is invalid — bad JSON, wrong types, out-
 - `experimental.chat.messages.transform` reads the real context size from the most recent completed assistant message's provider-reported token counts (the same number opencode's TUI context meter shows), then — when the threshold is crossed — pushes a synthetic user message into `output.messages` so the warning is visible to the model as part of the conversation.
 - `experimental.chat.system.transform` caches the model's context window from `model.limit.context` because the messages transform does not receive model info.
 - The plugin registers a `compact_context` tool the agent can call to compact its own session when the window is full. When `postCompactContinue` is enabled, a successful compaction posts `postCompactMsg` as a real user message (suppressing opencode's synthetic continue) so the session resumes on the configured instruction. When it is off, no message is sent after compaction.
+- The plugin registers a `context_watch_settings` tool for live control, on both runtimes. The `action` argument is one of: `reload` (re-read the config file and env overrides, then apply them live), `disable` (stop warning injection), `enable` (resume warning injection), `status` (show current settings). Tell the model, for example, "reload the context-watch config" or "disable the context warning".
 
 ## Development
 

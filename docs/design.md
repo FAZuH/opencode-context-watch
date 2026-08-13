@@ -16,12 +16,12 @@ export default {
 
 The loader's calling convention selects the backend. No version-detection code runs. The v1 loader calls `server(input, options)` and receives the v1 Hooks object. The v2 loader validates the object, reads `id`, and calls `setup(ctx)`.
 
-Both backends build the same domain core (config, context, model-info, warning, compaction, notify). Each backend adapts its runtime's events, tool registration, and compact client onto the shared `RuntimeBackend` port (`src/backend/types.ts`). The port is state-first: `compact`, `postCompact`, `notifier`, `modelCache`, `lastWarned`, and the optional `seams?`. The domain modules stay version-free.
+Both backends build the same domain core (config, context, model-info, warning, compaction, notify, live). Each backend adapts its runtime's events, tool registration, and compact client onto the shared `RuntimeBackend` port (`src/backend/types.ts`). The port is state-first: `compact`, `postCompact`, `notifier`, `modelCache`, `lastWarned`, `live`, and the optional `seams?`. The domain modules stay version-free.
 
 | Backend | File | Runtime surface it adapts |
 |---------|------|---------------------------|
-| `V1Backend` | `src/backend/v1.ts` | `experimental.chat.messages.transform`, `experimental.chat.system.transform`, `experimental.compaction.autocontinue`, the `compact_context` tool |
-| `V2Backend` | `src/backend/v2.ts` | `session.hook("context")`, `event.subscribe()`, `catalog.transform` (window), `tool.transform`, own `@opencode-ai/client/promise` compact client, `session.prompt` |
+| `V1Backend` | `src/backend/v1.ts` | `experimental.chat.messages.transform`, `experimental.chat.system.transform`, `experimental.compaction.autocontinue`, the `compact_context` + `context_watch_settings` tools |
+| `V2Backend` | `src/backend/v2.ts` | `session.hook("context")`, `event.subscribe()`, `catalog.transform` (window), `tool.transform` (`compact_context` + `context_watch_settings`), own `@opencode-ai/client/promise` compact client, `session.prompt` |
 
 Key v2 facts (probe-verified on opencode2 next-17155):
 
@@ -99,6 +99,52 @@ When `postCompactContinue` is on, the `experimental.compaction.autocontinue` hoo
 
 The injected message is REAL, unlike the transient warning injection. It is persisted to the session store, so the session loop processes it as the next user turn.
 
+## Live settings — the context_watch_settings tool
+
+The plugin also gives the user live control over its settings, without restarting opencode, on both runtimes. The surface is a `context_watch_settings` tool with one argument, `action`:
+
+- `reload` — re-reads `~/.config/opencode/opencode-context-watch.json` and the env overrides, then applies the new values live. Returns `"Reloaded config: 10 options applied"` (plus a problem count when the file has issues).
+- `disable` / `enable` — stops or resumes warning injection and notifications. Returns `"Warning injection disabled"` / `"Warning injection enabled"`.
+- `status` — returns a summary of the current settings: enabled state, thresholds, rearm bands, toast/verbose flags, and the config path.
+- Any other or missing action — returns a help string.
+
+The tool never throws.
+
+### Why a tool, not a slash command
+
+Neither runtime lets a plugin register a slash command. On v2 the `CommandDraft` has only `list/get/update/remove`. There is no `add`; commands come from user config or markdown files. On v1 commands come from markdown/config files, and the `command.execute.before` hook cannot skip the LLM round-trip on 1.18.x. The tool seam is the proven cross-runtime path (`compact_context` uses it), so the settings surface is a tool. The user runs it by telling the model, for example, "reload the context-watch config" or "disable the context warning".
+
+### Live state: mutate the object the hooks already read
+
+`LiveConfig` (`src/live.ts`) holds three pieces of state:
+
+- `options` — the same `Required<ContextWatchOptions>` object the per-event hooks read (`assess(opts, …)`, `renderMessage(opts.message, …)`, `opts.postCompactContinue`, `opts.windowTokens`).
+- `enabled` — a runtime-only gate, default `true`. It is NOT a config key: reload never reads or writes it, so a live disable survives a reload. It resets when opencode restarts.
+- `notifyFlags` — the `{ toastEnabled, verbose }` object passed to the `Notifier` constructor. The `Notifier` reads it on every call, so updating its fields flips toast/verbose live.
+
+`reload()` calls the existing pure `loadOptions(configPath)` (file + env, per-key fallback, problems) and copies the fresh values into `this.options` with `Object.assign`. The hooks read the SAME object identity, so the new thresholds, message, and notify flags apply on the next event. No hooks or tools re-register.
+
+### Reload semantics
+
+- New problems are reported through `notifier.alwaysLog` with the label `invalid config (reload)`. On v1 an error toast is also attempted, through the race-free `configToast` path; its flags reset so a reload-time problem can toast once more. Error toasts always fire, even when `toast: false`. On v2 there is no toast surface; problems are logged only.
+- Reload clears the per-session `lastWarned` map, so the new thresholds fire immediately instead of waiting for a rearm rise. On v2 it also clears the cached window lookups, so a `windowTokens` null↔N change re-resolves the window.
+- `compact_context`, the autocontinue hook, post-compact continue, and config-error reporting are unaffected.
+
+### The enabled gate
+
+`disable` sets `enabled = false`. The gate sits in two places: v1 `messages.transform` and v2 `onContext`. Each early-returns (after the sessionID check) before `assess` and injection. The gate covers warning injection and the notify path only. `compact_context`, autocontinue, post-compact continue, and config-error reporting stay active while disabled.
+
+### Tool shape per runtime
+
+- v1: `args: { action: z.enum(["reload","disable","enable","status"]) }`. opencode v1 derives the tool's JSON schema from the zod object and parses incoming args with it, so the action argument needs a real zod schema. `zod@^4.1.8` is a direct runtime dependency (previously only transitive via `@opencode-ai/plugin`).
+- v2: `add({ name, description, input, options: { codemode: false }, execute })` with a plain JSON-Schema `input` (`{ type: "object", properties: { action: { type: "string", enum: [...] } }, required: ["action"], additionalProperties: false }`); `execute` returns `{ content }`. Same seam as `compact_context`.
+
+Both `execute` handlers delegate to the shared `handleSettingsAction(action, live, hooks)` in `src/live.ts`.
+
+### Optional: a real slash command (not shipped)
+
+A user who wants `/context-watch reload` can define the command themselves — an `opencode.json` `command` key or a markdown command file. The plugin then reacts via `command.execute.before` (v1) or the `command.executed` event (v2). This is an optional path; the shipped surface is the tool.
+
 ## Critical design gotchas
 
 ### The injection is transient — push on EVERY turn
@@ -107,7 +153,7 @@ The synthetic message is pushed into the *current transform call's in-memory* me
 
 ### Config is read once at load
 
-`loadOptions()` runs when the plugin module loads; the file `~/.config/opencode/opencode-context-watch.json` is read a single time. **Changes require an opencode restart.**
+`loadOptions()` runs when the plugin module loads; the file `~/.config/opencode/opencode-context-watch.json` is read a single time. **Changes require an opencode restart** — or run the `context_watch_settings` tool with `action: reload` to apply them live (see "Live settings" above).
 
 ### Percent mode needs a known window
 
@@ -123,7 +169,7 @@ The synthetic message is pushed into the *current transform call's in-memory* me
 
 ## Configuration
 
-Config file (optional): `~/.config/opencode/opencode-context-watch.json`. Read once at load; restart to apply.
+Config file (optional): `~/.config/opencode/opencode-context-watch.json`. Read once at load; restart to apply, or use the settings tool's `reload` action to apply live.
 
 | Key | Default | Description |
 |-----|---------|-------------|
