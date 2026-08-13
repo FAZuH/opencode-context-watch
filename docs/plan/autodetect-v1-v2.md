@@ -207,7 +207,7 @@ Delegate: `implement` for the refactor, `test` for the gate, `review` after.
 - [x] **V2Backend** — real implementation behind the same `RuntimeBackend` port, driven by the v2-branch API map + EXTENDED runtime probes against real opencode2 (next-17155). See Deviation log for the runtime-verified shape corrections. Gate green: 126 tests pass, both `tsc` clean, biome clean, `bun build` OK.
 - [x] Type strategy decision + entry rework.
 - [x] **Real opencode2 probe with the real plugin** — object entry loads (no SchemaError), `setup(ctx)` fires, async cleanup accepted, context hook injects the transient warning mid-session (proven via pipeline probe), window lookup via `catalog.transform(draft => draft.model.get(...))` returns the real window (262144, synchronous draft callback), event drain delivers TokenUsageInfo. `compact_context` executes directly after the `options: { codemode: false }` + `{ content }` return fix (probe-real2: model got `Compaction failed: v2 beta compact client unavailable` — the honest no-client degradation string). See Deviation log for the full findings.
-- [ ] **Docs + archive + commit (PENDING)** — AGENTS.md, CONTEXT.md, design.md updated; ADR-003 written; v2-branch plan archived to `docs/plan/complete/`. Remaining: group commits + commit on `main` (delegate to `finish`, conventional commits, `changelog:` body key).
+- [x] **Docs + archive + commit** — AGENTS.md, CONTEXT.md, design.md updated; ADR-003 written; v2-branch plan archived to `docs/plan/complete/`; committed on `main` as `8824e10`, `364ed6b`, `683473a`, `203fdbf`, `fc7a7a6` (approved by user). `docs/dev/commit-changelog.md` was intentionally folded into the amended `6608c37 ci: sync ci`.
 
 ## Deviation log
 
