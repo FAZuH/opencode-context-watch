@@ -4,6 +4,7 @@ import {
 	assess,
 	contextTokens,
 	renderMessage,
+	tokensFromUsage,
 } from "../src/context";
 import { ModelInfoCache } from "../src/model-info";
 import { type OutputMessage, createWarning } from "../src/warning";
@@ -202,5 +203,27 @@ describe("contextTokens", () => {
 			{ info: { role: "user" } as never, parts: [] },
 		]);
 		expect(tokens).toBeUndefined();
+	});
+});
+
+describe("tokensFromUsage", () => {
+	test("sums input, output, reasoning and cache from a completed step", () => {
+		expect(
+			tokensFromUsage({
+				input: 1_000,
+				output: 100,
+				reasoning: 50,
+				cache: { read: 200, write: 50 },
+			}),
+		).toBe(1_400);
+	});
+
+	test("returns undefined while the step is still generating (no output yet)", () => {
+		expect(tokensFromUsage({ input: 5_000, output: 0 })).toBeUndefined();
+	});
+
+	test("returns undefined when input is missing or zero", () => {
+		expect(tokensFromUsage({ output: 100 })).toBeUndefined();
+		expect(tokensFromUsage({ input: 0, output: 100 })).toBeUndefined();
 	});
 });

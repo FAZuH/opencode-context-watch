@@ -95,6 +95,47 @@ export type SummarizeFn = (
 ) => Promise<unknown>;
 
 /**
+ * Minimal structural shape of the opencode v2 beta compact client — the
+ * `OpenCode.make({ baseUrl, headers })` client from
+ * `@opencode-ai/client/promise` (`session.compact`). The beta package is not
+ * installed on the v1 line, so both the import and this type stay local to
+ * the adapters; tests inject a fake via the backend seam.
+ */
+export interface V2BetaCompactClient {
+	session: {
+		compact(params: { sessionID: string }): Promise<unknown>;
+	};
+}
+
+/**
+ * The v2 beta compact path: the plugin's own `@opencode-ai/client/promise`
+ * client — the v2 `ctx.session` domain has no `compact`. Same contract as
+ * the other strategies: never throws, reports failure as an outcome so the
+ * `Compactor` falls through (or, with no other path, fails honestly).
+ */
+export class V2BetaCompactStrategy implements CompactStrategy {
+	readonly name = "v2 beta compact";
+
+	constructor(private readonly client: V2BetaCompactClient) {}
+
+	async compact(ctx: CompactContext): Promise<CompactOutcome> {
+		try {
+			const res = await this.client.session.compact({
+				sessionID: ctx.sessionID,
+			});
+			const err = extractError(res);
+			if (err) return { status: "failed", error: err };
+			return { status: "requested" };
+		} catch (err) {
+			return {
+				status: "failed",
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+	}
+}
+
+/**
  * The v1 `session.summarize` fallback — the only working programmatic
  * compaction path on opencode 1.18.x (the v2 endpoint is a server-side stub
  * and the old command path is dead). Needs per-session model info; without it
