@@ -1,5 +1,14 @@
 # Plan: DDD refactor + opencode v2 port
 
+> **ARCHIVED 2026-08-13.** The DDD-refactor part of this plan shipped on
+> `main`. The v2-port part (a separate `v2` branch with a v2-only entry) was
+> SUPERSEDED by the autodetect approach implemented on `main`: one plain-object
+> entry `{ id, server, setup }` plus the `src/backend/` seam (`V1Backend` +
+> `V2Backend` behind the `RuntimeBackend` port). See
+> `docs/plan/autodetect-v1-v2.md` and
+> `docs/decisions/ADR-003-runtime-autodetection.md`. This file remains a record
+> of the DDD module layout that shipped.
+
 ## Objective
 
 1. **Refactor first (DDD)** — split the `src/index.ts` monolith (686 lines) into domain modules: config, context, model-info, warning, compaction, notify, behind a thin composition root. Verified behavior-preserving (all existing tests green).

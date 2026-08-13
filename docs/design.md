@@ -4,24 +4,52 @@ An [opencode](https://opencode.ai) plugin that warns the agent when a session's 
 
 ## Architecture
 
-The plugin hooks two experimental opencode lifecycle events in one turn:
+One package runs on opencode v1 (1.18.x) and opencode v2 (2.0 beta). The entry point is a plain object, not a function:
+
+```ts
+export default {
+  id: "opencode-context-watch",
+  server: async (input, pluginOptions) => createV1Backend(input, pluginOptions),
+  setup: (ctx) => V2Backend.create(ctx as V2PluginContext),
+};
+```
+
+The loader's calling convention selects the backend. No version-detection code runs. The v1 loader calls `server(input, options)` and receives the v1 Hooks object. The v2 loader validates the object, reads `id`, and calls `setup(ctx)`.
+
+Both backends build the same domain core (config, context, model-info, warning, compaction, notify). Each backend adapts its runtime's events, tool registration, and compact client onto the shared `RuntimeBackend` port (`src/backend/types.ts`). The port is state-first: `compact`, `postCompact`, `notifier`, `modelCache`, `lastWarned`, and the optional `seams?`. The domain modules stay version-free.
+
+| Backend | File | Runtime surface it adapts |
+|---------|------|---------------------------|
+| `V1Backend` | `src/backend/v1.ts` | `experimental.chat.messages.transform`, `experimental.chat.system.transform`, `experimental.compaction.autocontinue`, the `compact_context` tool |
+| `V2Backend` | `src/backend/v2.ts` | `session.hook("context")`, `event.subscribe()`, `catalog.transform` (window), `tool.transform`, own `@opencode-ai/client/promise` compact client, `session.prompt` |
+
+Key v2 facts (probe-verified on opencode2 next-17155):
+
+- Context-hook messages carry `content` parts, not the v1-style `parts`; the warning is hand-built to that shape.
+- The model window comes from `catalog.transform(draft => draft.model.get(providerID, modelID))`; the draft callback runs synchronously.
+- The tool seam is `add({ name, description, input, options: { codemode: false }, execute })`; `execute` must return `{ content: string }`.
+- Notification is console-only; the v2 beta has no server-side toast.
+
+### v1 flow (opencode 1.18.x)
+
+The v1 backend hooks two experimental opencode lifecycle events in one turn:
 
 ```
 model request ──► experimental.chat.system.transform ──► experimental.chat.messages.transform ──► provider
                         │                                          │
                         └─ cache window (per sessionID)             └─ read context tokens,
                              from input.model.limit.context             check thresholds,
-                                                                        inject synthetic warning
+                                                                         inject synthetic warning
 ```
 
 | Hook | Role |
 |------|------|
-| `experimental.chat.system.transform` | Runs once per turn with model metadata. Caches `input.model.limit.context` (the model's context window) per `sessionID` in `windowCache`. This is the ONLY place model info is available. |
+| `experimental.chat.system.transform` | Runs once per turn with model metadata. Caches `input.model.limit.context` (the model's context window) per `sessionID`. This is the ONLY place model info is available under v1. |
 | `experimental.chat.messages.transform` | Runs with the fully assembled message list. Computes the current context size, compares against thresholds, and pushes a synthetic user message into `output.messages` so the warning reaches the provider as part of the conversation. |
 
 ### Context-size ground truth
 
-`contextTokens()` (`src/index.ts:110`) walks the message list from the most recent assistant message backwards and returns the first completed one's:
+`contextTokens()` (`src/context.ts`) walks the message list from the most recent assistant message backwards and returns the first completed one's:
 
 ```
 input + output + reasoning + cache.read + cache.write
@@ -34,7 +62,7 @@ This is the same number opencode's TUI context meter shows. Two correctness rule
 
 ### Threshold model: dual band, OR semantics
 
-The plugin warns when **either** band is crossed (`src/index.ts:159-162`):
+The plugin warns when **either** band is crossed (`assess` in `src/context.ts`):
 
 - **Percent band** — `tokens / window >= warnPercent`. Requires a known model window; when the window is unknown this band is disabled.
 - **Tokens band** — `tokens >= warnTokens`. Absolute, window-independent.
@@ -55,7 +83,7 @@ The plugin also gives the agent a way to compact its own session, plus a way to 
 
 ### Compact_context tool
 
-The plugin registers a `compact_context` tool (`src/index.ts:501`). The tool is always registered; there is no opt-out config. The agent calls it when the session is getting full. Its `execute(args, ctx)` calls `triggerCompact(ctx.sessionID)` (`src/index.ts:472`), which works like this:
+The plugin registers a `compact_context` tool. The tool is always registered; there is no opt-out config. The agent calls it when the session is getting full. Each backend registers the tool with its own runtime: `src/backend/v1.ts` (the v1 tool) and `src/backend/v2.ts` (the v2 tool). The tool's `execute` calls `backend.compact(...)`, the `compact` method on the shared `RuntimeBackend` port (`src/backend/types.ts`), which works like this:
 
 1. v2 path: `await v2Client.v2.session.compact({ sessionID })`. The v2 client is built lazily once at load from `@opencode-ai/sdk/v2/client`.
 2. v1 fallback: on any v2 failure or resolved-error, `client.session.summarize({ path: { id: sessionID }, body: { providerID, modelID, auto: true } })`. The `providerID` and `modelID` come from the per-session model cache captured by `experimental.chat.system.transform` (`input.model.providerID`, `input.model.id`; the window is `input.model.limit.context`). If the cache has no model for the session, the tool returns `"Compaction failed: <detail>"` and does NOT call summarize. `auto: true` makes opencode's `experimental.compaction.autocontinue` hook fire, so a tool-triggered compaction still posts the configured continue message. The v2 `session.compact` endpoint is a server-side hard stub on opencode 1.18.11 (`ServiceUnavailableError` — "Session compact is not available yet"), so on that build the summarize fallback is the path that actually compacts. The old v1 command fallback is dropped: research proved it is dead (`UnknownError` on 1.18.11), so the tool no longer mirrors the `/compact` keybind.
@@ -63,7 +91,7 @@ The plugin registers a `compact_context` tool (`src/index.ts:501`). The tool is 
 
 ### Post-compaction message
 
-When `postCompactContinue` is on, the `experimental.compaction.autocontinue` hook (`src/index.ts:509`) runs after a successful compaction:
+When `postCompactContinue` is on, the `experimental.compaction.autocontinue` hook runs after a successful compaction. The hook is wired in `src/backend/v1.ts` (the v1 backend; the v2 backend has no equivalent hook). It runs like this:
 
 - `output.enabled = false` suppresses opencode's synthetic "continue" message.
 - `client.session.promptAsync({ path: { id: input.sessionID }, body: { agent: input.agent, parts: [{ type: "text", text: opts.postCompactMsg }] } })` injects the configured text as a real, persisted user message. The call is fire-and-forget with a `.catch` log; a race here is tolerated by design.
