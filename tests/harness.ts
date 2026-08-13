@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Plugin } from "@opencode-ai/plugin";
 import type { Message, Part } from "@opencode-ai/sdk";
 import type { V2CompactClient } from "../src/index";
-import pluginFactory from "../src/index";
+import plugin from "../src/index";
 
 const ENV_VARS = [
 	"CONTEXT_WATCH_PERCENT",
@@ -147,7 +147,10 @@ export async function createHarness(
 		},
 	};
 
-	const handlers = await pluginFactory({ client } as never, {
+	// The entry is a plain object now (autodetect shape); the v1 path is the
+	// `server(input, options)` factory, which returns the same hooks object as
+	// the old callable default export.
+	const handlers = await plugin.server({ client } as never, {
 		configPath,
 		createOpencodeClientV2: opts.createOpencodeClientV2,
 		summarizeTimeoutMs: opts.summarizeTimeoutMs,
