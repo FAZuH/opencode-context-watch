@@ -1,4 +1,5 @@
 import type { Plugin, ToolDefinition } from "@opencode-ai/plugin";
+import { z } from "zod";
 import {
 	type CompactStrategy,
 	Compactor,
@@ -8,13 +9,19 @@ import {
 	V2CompactStrategy,
 	requestPostCompact,
 } from "../compaction";
-import { loadOptions } from "../config";
+import { CONFIG_PATH, type ConfigProblem, loadOptions } from "../config";
 import {
 	assess,
 	contextTokens,
 	notifyWarning,
 	renderMessage,
 } from "../context";
+import {
+	LiveConfig,
+	RELOAD_PROBLEM_LABEL,
+	SETTINGS_TOOL_DESCRIPTION,
+	handleSettingsAction,
+} from "../live";
 import { ModelInfoCache } from "../model-info";
 import { Notifier, type NotifyClient } from "../notify";
 import { createWarning } from "../warning";
@@ -66,23 +73,26 @@ export async function createV1Backend(
 	// Test-only seams; opencode always uses the default config path and its own
 	// bundled `@opencode-ai/sdk/v2` client factory.
 	const seam = pluginOptions;
-	const configPath = seam?.configPath;
+	const configPath = seam?.configPath ?? CONFIG_PATH;
 	const { options: opts, problems } = loadOptions(configPath);
+	const live = new LiveConfig(configPath, opts);
 
-	const notifier = new Notifier(client as PluginClient, {
-		toastEnabled: opts.toast,
-		verbose: opts.verbose,
-	});
+	const notifier = new Notifier(client as PluginClient, live.notifyFlags);
 
 	// Config-error toast: fire at load time; if the TUI is not connected yet it
 	// fails (falling back to the opencode log) and we retry on the first message
 	// transform. Capped attempts so a headless run cannot spam the log. The
 	// shown/in-flight flags are set synchronously (never via a `.then` callback)
 	// so the retry cannot race or double-fire, and configToast never rejects.
+	// Reload problems reuse the same flags: the settings tool resets them so a
+	// reload-time problem can toast once more. `currentProblems` is mutable
+	// because reload replaces the problem set — the transform retry must show
+	// the LATEST problems, not the stale load-time ones.
+	let currentProblems: ConfigProblem[] = problems;
 	let configErrorShown = false;
 	let configErrorInFlight = false;
 	let configToastAttempts = 0;
-	const configToast = async (): Promise<void> => {
+	const showConfigError = async (problems: ConfigProblem[]): Promise<void> => {
 		if (configErrorShown || configErrorInFlight || configToastAttempts >= 3)
 			return;
 		configToastAttempts++;
@@ -98,7 +108,7 @@ export async function createV1Backend(
 	};
 	if (problems.length > 0) {
 		notifier.alwaysLog("error", "invalid config", { problems });
-		void configToast();
+		void showConfigError(problems);
 	}
 
 	// sessionID -> model info, cached by system.transform (messages.transform has no model info)
@@ -156,6 +166,7 @@ export async function createV1Backend(
 	// shape; the v2 backend wires the same core onto `setup(ctx)`.
 	const backend: RuntimeBackend = {
 		seams: seam,
+		live,
 		modelCache,
 		lastWarned,
 		notifier,
@@ -180,9 +191,30 @@ export async function createV1Backend(
 			backend.compact(ctx.sessionID, backend.modelCache.get(ctx.sessionID)),
 	};
 
+	const settingsTool: ToolDefinition = {
+		description: SETTINGS_TOOL_DESCRIPTION,
+		args: { action: z.enum(["reload", "disable", "enable", "status"]) },
+		execute: async (args) =>
+			handleSettingsAction(args.action, live, {
+				clearLastWarned: () => backend.lastWarned.clear(),
+				reportProblems: (probs) => {
+					currentProblems = probs;
+					notifier.alwaysLog("error", RELOAD_PROBLEM_LABEL, {
+						problems: probs,
+					});
+					// Reset the load-time flags so a reload problem can toast
+					// once more (same race-free sync-flag pattern).
+					configErrorShown = false;
+					configToastAttempts = 0;
+					void showConfigError(probs);
+				},
+			}),
+	};
+
 	return {
 		tool: {
 			compact_context: compactTool,
+			context_watch_settings: settingsTool,
 		},
 
 		"experimental.compaction.autocontinue": async (input, output) => {
@@ -196,11 +228,14 @@ export async function createV1Backend(
 		},
 
 		"experimental.chat.messages.transform": async (_input, output) => {
-			if (problems.length > 0 && !configErrorShown) {
-				void configToast();
+			if (currentProblems.length > 0 && !configErrorShown) {
+				void showConfigError(currentProblems);
 			}
 			const sessionID = output.messages[0]?.info.sessionID;
 			if (!sessionID) return;
+			// The settings tool's disable/enable gate: injection + notify only.
+			// The config-error retry above stays live even while disabled.
+			if (!live.enabled) return;
 			const tokens = contextTokens(output.messages);
 			if (tokens === undefined) return;
 

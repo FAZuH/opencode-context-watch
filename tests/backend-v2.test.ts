@@ -186,6 +186,7 @@ async function boot(
 	return {
 		fake,
 		cleanup,
+		configPath,
 		cleanupTests: () => {
 			rmSync(home, { recursive: true, force: true });
 			for (const v of ENV_VARS) {
@@ -389,6 +390,129 @@ describe("V2Backend — compact_context tool", () => {
 	});
 });
 
+describe("V2Backend — context_watch_settings tool", () => {
+	test("registers context_watch_settings with a JSON-schema action enum and codemode false", async () => {
+		const h = await boot(null);
+		const tool = h.fake.toolDefs.find(
+			(t) => t.name === "context_watch_settings",
+		);
+		expect(tool).toBeDefined();
+		if (!tool) throw new Error("context_watch_settings tool missing");
+		expect(tool.options).toEqual({ codemode: false });
+		const input = tool.input as {
+			type: string;
+			properties: { action: { type: string; enum: string[] } };
+			required: string[];
+			additionalProperties: boolean;
+		};
+		expect(input.type).toBe("object");
+		expect(input.properties.action.type).toBe("string");
+		expect(input.properties.action.enum).toEqual([
+			"reload",
+			"disable",
+			"enable",
+			"status",
+		]);
+		expect(input.required).toEqual(["action"]);
+		expect(input.additionalProperties).toBe(false);
+		h.cleanupTests();
+	});
+
+	test("disable stops onContext injection; enable resumes it", async () => {
+		const h = await boot(JSON.stringify({ warnPercent: 80, rearmPercent: 5 }), {
+			modelWindow: 200_000,
+		});
+		const tool = h.fake.toolDefs.find(
+			(t) => t.name === "context_watch_settings",
+		);
+		if (!tool) throw new Error("context_watch_settings tool missing");
+
+		h.fake.pushEvent(usageTokens({ input: 165_000, output: 5_000 })); // 85%
+		await sleep(5);
+		expect(h.fake.fireContext(contextEvent()).messages).toHaveLength(1);
+
+		const disabled = await tool.execute(
+			{ action: "disable" },
+			{
+				sessionID: "s1",
+			},
+		);
+		expect(disabled).toEqual({ content: "Warning injection disabled" });
+		expect(h.fake.fireContext(contextEvent()).messages).toHaveLength(0);
+
+		const enabled = await tool.execute(
+			{ action: "enable" },
+			{
+				sessionID: "s1",
+			},
+		);
+		expect(enabled).toEqual({ content: "Warning injection enabled" });
+		expect(h.fake.fireContext(contextEvent()).messages).toHaveLength(1);
+		h.cleanupTests();
+	});
+
+	test("reload applies a changed warnPercent live", async () => {
+		const h = await boot(JSON.stringify({ warnPercent: 90, rearmPercent: 5 }), {
+			modelWindow: 200_000,
+		});
+		const tool = h.fake.toolDefs.find(
+			(t) => t.name === "context_watch_settings",
+		);
+		if (!tool) throw new Error("context_watch_settings tool missing");
+
+		h.fake.pushEvent(usageTokens({ input: 120_000, output: 1 })); // 60%
+		await sleep(5);
+		expect(h.fake.fireContext(contextEvent()).messages).toHaveLength(0); // under 90%
+
+		writeFileSync(
+			h.configPath,
+			JSON.stringify({ warnPercent: 50, rearmPercent: 5 }),
+			"utf8",
+		);
+		const result = await tool.execute(
+			{ action: "reload" },
+			{
+				sessionID: "s1",
+			},
+		);
+		expect(result.content).toContain("Reloaded");
+
+		h.fake.pushEvent(usageTokens({ input: 120_000, output: 1 })); // 60% again
+		await sleep(5);
+		expect(h.fake.fireContext(contextEvent()).messages).toHaveLength(1); // over 50%
+		h.cleanupTests();
+	});
+
+	test("status returns a string; unknown action returns help without throwing", async () => {
+		const h = await boot(null);
+		const tool = h.fake.toolDefs.find(
+			(t) => t.name === "context_watch_settings",
+		);
+		if (!tool) throw new Error("context_watch_settings tool missing");
+
+		const status = await tool.execute(
+			{ action: "status" },
+			{
+				sessionID: "s1",
+			},
+		);
+		expect(status.content).toContain("enabled=true");
+		expect(status.content).toContain(h.configPath);
+
+		const help = await tool.execute(
+			{ action: "bogus" },
+			{
+				sessionID: "s1",
+			},
+		);
+		expect(help.content).toContain("reload");
+		expect(help.content).toContain("disable");
+		expect(help.content).toContain("enable");
+		expect(help.content).toContain("status");
+		h.cleanupTests();
+	});
+});
+
 describe("V2Backend — post-compact continue", () => {
 	test("sends the configured text via session.prompt when enabled", async () => {
 		const h = await boot(
@@ -473,6 +597,51 @@ describe("entry setup", () => {
 		await cleanup();
 		expect(fake.contextHookRegistered()).toBe(true);
 		rmSync(home, { recursive: true, force: true });
+	});
+
+	test("setup({}) with a non-v2 context is a silent no-op cleanup", async () => {
+		const home = mkdtempSync(join(tmpdir(), "context-watch-v2-entry-"));
+		const spy = spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const cleanup = await plugin.setup({} as never);
+			expect(typeof cleanup).toBe("function");
+			await cleanup();
+			const calls = spy.mock.calls.map((c) => c.join(" "));
+			expect(
+				calls.some(
+					(c) =>
+						c.includes("registration failed") ||
+						c.includes("client unavailable") ||
+						c.includes("invalid config"),
+				),
+			).toBe(false);
+		} finally {
+			spy.mockRestore();
+			rmSync(home, { recursive: true, force: true });
+		}
+	});
+
+	test("setup with a partial context (tool.transform only, no session/event) is a silent no-op cleanup", async () => {
+		const home = mkdtempSync(join(tmpdir(), "context-watch-v2-entry-"));
+		const spy = spyOn(console, "log").mockImplementation(() => {});
+		try {
+			const partial = { tool: { transform: async () => {} } };
+			const cleanup = await plugin.setup(partial as never);
+			expect(typeof cleanup).toBe("function");
+			await cleanup();
+			const calls = spy.mock.calls.map((c) => c.join(" "));
+			expect(
+				calls.some(
+					(c) =>
+						c.includes("registration failed") ||
+						c.includes("client unavailable") ||
+						c.includes("invalid config"),
+				),
+			).toBe(false);
+		} finally {
+			spy.mockRestore();
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 });
 

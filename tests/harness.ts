@@ -42,6 +42,8 @@ export interface FakeClient {
 }
 
 export interface Harness {
+	/** The isolated config file path the harness reads (reload tests rewrite it). */
+	configPath: string;
 	toasts: { message: string; variant: string }[];
 	appLogs: { level: string; message: string; extra: unknown }[];
 	sessionPrompts: { sessionID: string; text: string; agent?: string }[];
@@ -158,6 +160,7 @@ export async function createHarness(
 	await new Promise((r) => setTimeout(r, 0));
 
 	return {
+		configPath,
 		toasts,
 		appLogs,
 		sessionPrompts,

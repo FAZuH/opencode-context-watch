@@ -1,5 +1,6 @@
 import type { V2BetaCompactClient, V2CompactClient } from "../compaction";
 import type { LastWarned } from "../context";
+import type { LiveConfig } from "../live";
 import type { ModelInfo, ModelInfoCache } from "../model-info";
 import type { Notifier } from "../notify";
 
@@ -32,6 +33,8 @@ export interface BackendSeams {
 export interface RuntimeBackend {
 	/** Adapter-provided test seams (v1 plugin options; v2 passes none). */
 	readonly seams?: BackendSeams;
+	/** Live config state: the settings tool mutates it; hooks read it per event. */
+	readonly live: LiveConfig;
 	/** Trigger compaction; resolves the agent-facing result string. */
 	compact(sessionID: string, model: ModelInfo | undefined): Promise<string>;
 	/** Resume the session after a compaction (fire-and-forget, never throws). */

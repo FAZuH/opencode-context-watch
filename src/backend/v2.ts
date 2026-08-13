@@ -5,13 +5,19 @@ import {
 	V2BetaCompactStrategy,
 	requestPostCompact,
 } from "../compaction";
-import { loadOptions } from "../config";
+import { CONFIG_PATH, loadOptions } from "../config";
 import {
 	assess,
 	notifyWarning,
 	renderMessage,
 	tokensFromUsage,
 } from "../context";
+import {
+	LiveConfig,
+	RELOAD_PROBLEM_LABEL,
+	SETTINGS_TOOL_DESCRIPTION,
+	handleSettingsAction,
+} from "../live";
 import { ModelInfoCache } from "../model-info";
 import { Notifier, type NotifyClient } from "../notify";
 import type { BackendSeams, RuntimeBackend } from "./types";
@@ -196,16 +202,33 @@ export function buildV2Warning(sessionID: string, text: string): V2Message {
  */
 export const V2Backend = {
 	async create(
-		ctx: V2PluginContext,
+		ctx: Partial<V2PluginContext> | undefined,
 		pluginOptions?: BackendSeams,
 	): Promise<() => Promise<void>> {
-		const seam = pluginOptions;
-		const { options: opts, problems } = loadOptions(seam?.configPath);
+		// The v1 loader (1.18.x) also calls `setup(ctx)` with a context that
+		// has no v2 surface — the real v1 path is `server()`. Return a silent
+		// no-op cleanup instead of running the v2 wiring (config read, client
+		// import, tool and hook registration) against a non-v2 context.
+		if (
+			!ctx ||
+			typeof ctx.tool?.transform !== "function" ||
+			typeof ctx.session?.hook !== "function" ||
+			typeof ctx.event?.subscribe !== "function"
+		) {
+			return async () => {};
+		}
+		// Capture the checked context as a const: parameter narrowing does not
+		// flow into the closures below (postCompact, lookupWindow). The guard
+		// verified tool/session/event; catalog is only reached from a
+		// registered context hook, as the pre-guard code always assumed.
+		const v2ctx = ctx as V2PluginContext;
 
-		const notifier = new Notifier(consoleClient, {
-			toastEnabled: opts.toast,
-			verbose: opts.verbose,
-		});
+		const seam = pluginOptions;
+		const configPath = seam?.configPath ?? CONFIG_PATH;
+		const { options: opts, problems } = loadOptions(configPath);
+		const live = new LiveConfig(configPath, opts);
+
+		const notifier = new Notifier(consoleClient, live.notifyFlags);
 
 		// Config problems: log once at setup. There is no toast retry under v2
 		// (no toast surface, and no messages.transform to retry on).
@@ -283,6 +306,7 @@ export const V2Backend = {
 
 		const backend: RuntimeBackend = {
 			seams: seam,
+			live,
 			modelCache,
 			lastWarned,
 			notifier,
@@ -290,14 +314,14 @@ export const V2Backend = {
 			postCompact: (input, text) =>
 				requestPostCompact(
 					(sessionID, _agent, message) =>
-						ctx.session.prompt({ sessionID, text: message }),
+						v2ctx.session.prompt({ sessionID, text: message }),
 					input,
 					text,
 				),
 		};
 
 		try {
-			await ctx.tool.transform((draft) => {
+			await v2ctx.tool.transform((draft) => {
 				draft.add({
 					name: "compact_context",
 					description:
@@ -321,6 +345,40 @@ export const V2Backend = {
 						),
 					}),
 				});
+				draft.add({
+					name: "context_watch_settings",
+					description: SETTINGS_TOOL_DESCRIPTION,
+					input: {
+						type: "object",
+						properties: {
+							action: {
+								type: "string",
+								enum: ["reload", "disable", "enable", "status"],
+							},
+						},
+						required: ["action"],
+						additionalProperties: false,
+					},
+					options: { codemode: false },
+					execute: async (input) => {
+						const action = (input as { action?: unknown }).action;
+						return {
+							content: handleSettingsAction(action, live, {
+								clearLastWarned: () => backend.lastWarned.clear(),
+								reportProblems: (probs) =>
+									notifier.alwaysLog("error", RELOAD_PROBLEM_LABEL, {
+										problems: probs,
+									}),
+								// A windowTokens null<->N change must re-resolve the
+								// model window instead of reusing cached lookups.
+								clearWindowLookups: () => {
+									windowLookups.clear();
+									modelWindows.clear();
+								},
+							}),
+						};
+					},
+				});
 			});
 		} catch (err) {
 			console.log(
@@ -341,7 +399,7 @@ export const V2Backend = {
 		): number | undefined => {
 			let found: number | undefined;
 			try {
-				const res = ctx.catalog.transform((draft) => {
+				const res = v2ctx.catalog.transform((draft) => {
 					const model = draft.model.get(providerID, modelID);
 					const context = model?.limit?.context;
 					if (context && context > 0) {
@@ -369,6 +427,10 @@ export const V2Backend = {
 		const onContext = (event: V2ContextEvent): void => {
 			const sessionID = event.sessionID;
 			if (!sessionID) return;
+			// The settings tool's disable/enable gate: injection + notify only.
+			// The event-stream drain keeps running so token ground truth stays
+			// current across a disable.
+			if (!live.enabled) return;
 
 			const providerID = event.model?.providerID;
 			const modelID = event.model?.id;
@@ -430,7 +492,7 @@ export const V2Backend = {
 		let iterator: AsyncIterator<V2Event> | undefined;
 		let stopped = false;
 		try {
-			const registered = await ctx.session.hook("context", onContext);
+			const registered = await v2ctx.session.hook("context", onContext);
 			disposeContext =
 				registered && typeof registered === "object"
 					? registered.dispose
@@ -441,7 +503,7 @@ export const V2Backend = {
 			// `data.tokens`) and the post-compact continue trigger
 			// (`session.compaction.ended`). The iterator's `return()` tears the
 			// subscription down; the cleanup below calls it.
-			iterator = ctx.event.subscribe()[Symbol.asyncIterator]();
+			iterator = v2ctx.event.subscribe()[Symbol.asyncIterator]();
 			const it = iterator;
 			void (async () => {
 				try {
