@@ -187,13 +187,15 @@ jobs:
           output-file: ${{ needs.changelog.outputs.mode == 'manual' && 'false' || 'CHANGELOG.md' }}
           git-push: false
 
-      - name: Extract manual changelog section
+      - name: Materialize [Unreleased] section
         id: manual-body
         if: needs.changelog.outputs.mode == 'manual'
         run: |
+          BODY="$(node ./.github/scripts/materialize-unreleased.cjs CHANGELOG.md "${{ steps.commit.outputs.tag }}" "$(date -u +%Y-%m-%d)")"
+          git add CHANGELOG.md 2>/dev/null || true
           {
             echo "body<<EOF"
-            sed -n '/^## /,$p' CHANGELOG.md 2>/dev/null | awk '/^## / && ++n > 1 { exit } { print }'
+            printf '%s\n' "$BODY"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 

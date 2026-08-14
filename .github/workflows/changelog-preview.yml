@@ -79,6 +79,24 @@ jobs:
           echo '${{ steps.changelog.outputs.tag }}' > /tmp/next_tag.txt
           echo '${{ steps.changelog.outputs.skipped }}' > /tmp/skipped.txt
 
+      - name: Read changelog mode
+        id: mode
+        run: |
+          MODE=$(cat .github/changelog-mode 2>/dev/null || echo auto)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+
+      - name: Materialize manual release body
+        if: steps.mode.outputs.mode == 'manual'
+        run: |
+          if [ -s /tmp/next_tag.txt ] && [ -f CHANGELOG.md ]; then
+            FIRST=$(grep -m1 '^## ' CHANGELOG.md || true)
+            if [ "$FIRST" != "## [Unreleased]" ]; then
+              touch /tmp/manual_missing_unreleased.txt
+            fi
+            cp CHANGELOG.md /tmp/CHANGELOG.preview.md
+            node ./.github/scripts/materialize-unreleased.cjs /tmp/CHANGELOG.preview.md "$(cat /tmp/next_tag.txt)" "$(date -u +%Y-%m-%d)" > /tmp/manual_release_body.txt
+          fi
+
       - name: Post PR Comment
         env:
           MEMBER_VERSIONS: ${{ needs.workspace.outputs.member-versions }}
@@ -88,13 +106,14 @@ jobs:
             const fs = require('fs');
 
             // Per-repo changelog mode: absent or 'auto' = stock generation,
-            // 'manual' = human-maintained CHANGELOG.md (no auto preview body).
+            // 'manual' = human-maintained CHANGELOG.md (materialized release body preview).
             let mode = 'auto';
             try { mode = (fs.readFileSync('.github/changelog-mode', 'utf8').trim() || 'auto'); } catch (e) { /* absent = auto */ }
 
             // Parse latest maintainer comment for overrides (auto mode only)
             let bumpOverrides = {};
             let changelog = null;
+            let noUnreleasedNote = false;
             if (mode !== 'manual') {
               const { data: prComments } = await github.rest.issues.listComments({
                 owner: context.repo.owner,
@@ -135,6 +154,15 @@ jobs:
                   changelog = '';
                 }
               }
+            } else {
+              // manual mode: show the materialized release body (what the release will post)
+              const skipped = fs.readFileSync('/tmp/skipped.txt', 'utf8').trim();
+              if (skipped !== 'true') {
+                try {
+                  changelog = fs.readFileSync('/tmp/manual_release_body.txt', 'utf8').trim() || null;
+                } catch (e) { changelog = null; }
+                noUnreleasedNote = fs.existsSync('/tmp/manual_missing_unreleased.txt');
+              }
             }
 
             const tag = (function () {
@@ -162,6 +190,9 @@ jobs:
             let commentBody = '## Release Preview\n\n';
             if (tag) {
               commentBody += '**Next version:** `' + tag + '`\n\n';
+            }
+            if (noUnreleasedNote) {
+              commentBody += '> **Note:** CHANGELOG.md has no `## [Unreleased]` section. An empty one was created for this preview — add your entries under it to preview the release body.\n\n';
             }
 
             const memberNames = Object.keys(memberVersions);
