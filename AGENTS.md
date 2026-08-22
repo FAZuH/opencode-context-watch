@@ -35,8 +35,8 @@ tooling) and formats JSON files with 2-space indent to match the committed style
 ### Runtime autodetection — one entry, both runtimes
 
 - `src/index.ts` exports a plain object: `export default { id: "opencode-context-watch", server: async (input, pluginOptions) => createV1Backend(...), setup: (ctx) => V2Backend.create(ctx as V2PluginContext) }`. There is NO version-detection code — the loader's calling convention selects the backend. The v1 loader calls `server(input, options)` and receives the Hooks object. The v2 loader validates the object, reads `id`, and calls `setup(ctx)`. No runtime `@opencode-ai/plugin` import — structural types only. No beta packages are installed (they would break the v1 tests).
-- The backend seam is `src/backend/`: `types.ts` (`BackendSeams` — `configPath`, `createOpencodeClientV2`, `createOpencodeClientV2Beta`, `summarizeTimeoutMs` — and the state-first `RuntimeBackend` port: `compact`, `postCompact`, `notifier`, `modelCache`, `lastWarned`, `live`, `seams?`), `v1.ts` (`V1Backend`), `v2.ts` (`V2Backend`). The domain modules are version-free; each backend adapts its runtime's events onto the port.
-- V2 backend facts (probe-verified on real opencode2 next-17155):
+- The backend seam is `src/backend/`: `types.ts` (`BackendSeams` — `configPath`, `createOpencodeClientV2`, `createOpencodeClientV2Beta`, `summarizeTimeoutMs`, `createWatcher` — and the state-first `RuntimeBackend` port: `compact`, `postCompact`, `notifier`, `modelCache`, `lastWarned`, `live`, `seams?`), `v1.ts` (`V1Backend`), `v2.ts` (`V2Backend`). The domain modules are version-free; each backend adapts its runtime's events onto the port.
+- V2 backend facts (probe-verified on real opencode2 next-17155; re-probed + E2E-verified on 0.0.0-beta-17898, see `.scratch/2026-08-22_v2-plugin-fix/`):
   - Context-hook messages are `{ id, role, content: [{ type, text }], metadata }` — `content`, NOT the v1-style `parts`. The warning is hand-built to that shape. Inject on EVERY `session.hook("context")` call above the band; rearm gates only notify.
   - Tokens arrive as `TokenUsageInfo` on `session.step.ended` / `session.usage.updated` inside `event.subscribe()`. `tokensFromUsage` sums `input + output + reasoning + cache.read + cache.write`, only when `input > 0 && output > 0` (matches v1 pickiness).
   - Window lookup: `catalog.transform(draft => draft.model.get(providerID, modelID))`; the draft callback runs synchronously. The domain `catalog.model` has NO `get` (only `{ list, default }`).
@@ -60,21 +60,24 @@ tooling) and formats JSON files with 2-space indent to match the committed style
 - `experimental.compaction.autocontinue` hook: always set `output.enabled = false` (suppress opencode's synthetic continue). When `postCompactContinue: true`, also fire-and-forget `client.session.promptAsync({ path: { id: input.sessionID }, body: { agent: input.agent, parts: [{ type: "text", text: opts.postCompactMsg }] } })` — a REAL persisted user message (`.catch` + log, tolerated races, never throws). When off, nothing is sent after compaction.
 - Config keys: `postCompactContinue` (boolean, default `false`; when true, send a message after compaction; env `CONTEXT_WATCH_POST_COMPACT_CONTINUE` accepts literal "true"/"false"/numeric strings — anything else pushes a problem and falls back to file/default) and `postCompactMsg` (string, default "[context-watch] Session context was compacted. Continue your work from where you left off, keeping replies concise."; env `CONTEXT_WATCH_POST_COMPACT_MSG`).
 
-### Live settings — the `context_watch_settings` tool (probe-verified 2026-08-13)
+### Live settings — settings tool, config-file bridge, TUI commands
 
 - `src/live.ts` is the live mutable state behind the tool: `LiveConfig` holds
   `options` (the SAME object identity the per-event hooks read — reload does an
   in-place `Object.assign`, so new thresholds/message/notify flags apply with
-  zero re-registration), a runtime-only `enabled` flag (NOT a config key;
-  survives reload; resets on restart), and `notifyFlags` passed to the
-  `Notifier` by reference so `toast`/`verbose` flip live. `handleSettingsAction`
+  zero re-registration), an `enabled` gate backed by the `enabled` CONFIG KEY
+  (default `true`; the settings tool's `disable`/`enable` persist it to the
+  config file via `updateConfigFile`, and `reload` re-applies the file value),
+  and `notifyFlags` passed to the `Notifier` by reference so `toast`/`verbose`
+  flip live. `handleSettingsAction`
   is the shared execute switch; `SETTINGS_TOOL_DESCRIPTION` and
   `RELOAD_PROBLEM_LABEL` are the shared strings. The `RuntimeBackend` port
   carries `live`.
 - Actions: `reload` re-reads the config file + env overrides via the pure
   `loadOptions` (reports problems, never throws; clears per-session `lastWarned`
   and, on v2, the `windowLookups`/`modelWindows` caches so a `windowTokens`
-  null<->N change re-resolves); `disable`/`enable` gate ONLY warning injection
+  null<->N change re-resolves); `disable`/`enable` persist `enabled: false|true`
+  to the config file and gate ONLY warning injection
   + notifications (v1 `messages.transform` and v2 `onContext` early-return
   after the sessionID check — `compact_context`, autocontinue, post-compact
   continue and the config-error reporting stay active while disabled);
@@ -94,6 +97,35 @@ tooling) and formats JSON files with 2-space indent to match the committed style
   status/disable/reload executed and returned the correct strings, env
   overrides visible in status, both tools coexist in one session. opencode v1
   1.18.18 — zod args accepted, tool executed, statusText returned.
+- v2 `ctx.options` overlay (beta-17898): the object-form plugins entry
+  `{ package, options }` passes options as `ctx.options`; the v2 backend
+  layers it over the file's raw values via `loadOptions(configPath, overlay)`
+  so per-key precedence becomes env > ctx.options > file > default. The
+  overlay is stored on `LiveConfig` so reload re-applies it. V1 has no overlay.
+- Config-file bridge: the TUI commands write the config file directly and a
+  server-side watcher applies the changes live.
+  - `src/watch.ts` `watchConfigFile(configPath, onChange, debounceMs = 150)`:
+    watches the PARENT directory (the commands write atomically via `.tmp` +
+    renameSync, which replaces the inode), filters by basename, debounces,
+    always attaches an `'error'` listener; never throws; `close()` clears the
+    pending debounce timer. Both backends wire onChange to `live.reload()` +
+    `lastWarned.clear()` (v2 also clears `windowLookups`/`modelWindows`) +
+    reload-problem reporting. The v1 Hooks object has NO dispose point, so the
+    v1 watcher lives for the plugin lifetime; v2 closes it first in its cleanup.
+  - `src/tui.ts` is a SEPARATE plugin entry (`{ id, tui }`) because both
+    loaders reject a module default-exporting `server` AND `tui`; register it
+    by FILE path in `tui.json`. `buildTuiCommands(deps)` is pure with injected
+    fs/toast/env deps; four commands (`Context-watch: status|reload
+    config|disable warning|enable warning`, slash `/context-watch-*`) whose
+    onSelect bodies are try/catch-wrapped (error toast, never throw). Reload
+    refuses to create a missing config file; status resolves displayed
+    settings with `process.env` (`ctx.options` is not available in the TUI
+    host). Tool disable/enable and TUI disable/enable persist the same
+    `enabled` key via `updateConfigFile`.
+- Tests inject a FAKE watcher via the `createWatcher` BackendSeams option:
+  bun's parallel runner surfaces real fs.watch handles from removed tmp dirs
+  as "Unhandled error between tests", so only dedicated watch tests use the
+  real watcher.
 - Optional (not shipped): a user who wants a real slash command can define one
   themselves (config `command` key or a markdown command file); the plugin can
   react via `command.execute.before` (v1) / `command.executed` event (v2).
