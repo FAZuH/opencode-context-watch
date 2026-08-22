@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadOptions } from "../src/config";
+import { loadOptions, readConfigFile } from "../src/config";
 import { LiveConfig, handleSettingsAction } from "../src/live";
 
 const ENV_VARS = [
@@ -73,17 +73,28 @@ describe("LiveConfig", () => {
 		);
 	});
 
-	test("enabled starts true, toggles via setEnabled, and survives reload", () => {
-		withConfig(null, (configPath) => {
+	test("enabled initializes from the config, toggles via setEnabled, and reload applies the file value", () => {
+		withConfig(JSON.stringify({ enabled: false }), (configPath) => {
 			const live = new LiveConfig(configPath, loadOptions(configPath).options);
-			expect(live.enabled).toBe(true);
-			live.setEnabled(false);
-			expect(live.enabled).toBe(false);
-			live.reload();
-			// runtime-only gate: reload does not re-enable
 			expect(live.enabled).toBe(false);
 			live.setEnabled(true);
 			expect(live.enabled).toBe(true);
+			live.reload();
+			// reload applies enabled from the file: back to false
+			expect(live.enabled).toBe(false);
+		});
+	});
+
+	test("persistEnabled writes { enabled: v } to the file and applies it", () => {
+		withConfig(null, (configPath) => {
+			const live = new LiveConfig(configPath, loadOptions(configPath).options);
+			const problems = live.persistEnabled(false);
+			expect(problems).toHaveLength(0);
+			expect(live.enabled).toBe(false);
+			expect(readConfigFile(configPath).raw.enabled).toBe(false);
+			expect(readFileSync(configPath, "utf8")).toBe(
+				'{\n  "enabled": false\n}\n',
+			);
 		});
 	});
 
@@ -113,24 +124,45 @@ describe("LiveConfig", () => {
 });
 
 describe("handleSettingsAction", () => {
-	test("disable and enable toggle the gate and return status strings", () => {
+	test("disable and enable toggle the gate, persist to the file, and return status strings", () => {
 		withConfig(null, (configPath) => {
 			const live = new LiveConfig(configPath, loadOptions(configPath).options);
+			let reported: unknown[] = [];
 			const hooks = {
 				clearLastWarned: () => {},
-				reportProblems: () => {
-					throw new Error("must not be called");
+				reportProblems: (problems: unknown[]) => {
+					reported = problems;
 				},
 			};
 			expect(handleSettingsAction("disable", live, hooks)).toBe(
 				"Warning injection disabled",
 			);
 			expect(live.enabled).toBe(false);
+			expect(reported).toHaveLength(0);
+			expect(readConfigFile(configPath).raw.enabled).toBe(false);
 			expect(handleSettingsAction("enable", live, hooks)).toBe(
 				"Warning injection enabled",
 			);
 			expect(live.enabled).toBe(true);
+			expect(readConfigFile(configPath).raw.enabled).toBe(true);
 		});
+	});
+
+	test("disable reports a problem when the file cannot be written but still gates", () => {
+		const home = mkdtempSync(join(tmpdir(), "context-watch-live-test-"));
+		const configPath = join(home, "nested", "opencode-context-watch.json");
+		const live = new LiveConfig(configPath, loadOptions(configPath).options);
+		let reported: unknown[] = [];
+		const result = handleSettingsAction("disable", live, {
+			clearLastWarned: () => {},
+			reportProblems: (problems: unknown[]) => {
+				reported = problems;
+			},
+		});
+		expect(result).toBe("Warning injection disabled");
+		expect(live.enabled).toBe(false);
+		expect(reported.length).toBeGreaterThan(0);
+		rmSync(home, { recursive: true, force: true });
 	});
 
 	test("status delegates to statusText", () => {

@@ -67,6 +67,32 @@ export function extractError(res: unknown): string | undefined {
 	return undefined;
 }
 
+/**
+ * Render a caught value as a short agent-facing error string. The v2 beta
+ * client THROWS the server's parsed error body on declared error statuses (a
+ * plain object like `{ _tag, message }`), where `String(err)` would be
+ * "[object Object]"; prefer an Error's message, then a body's `message`
+ * field, then JSON.
+ */
+export function describeError(err: unknown): string {
+	if (err instanceof Error) return err.message;
+	if (
+		typeof err === "object" &&
+		err !== null &&
+		typeof (err as { message?: unknown }).message === "string"
+	) {
+		return (err as { message: string }).message;
+	}
+	if (typeof err === "object" && err !== null) {
+		try {
+			return JSON.stringify(err);
+		} catch {
+			return String(err);
+		}
+	}
+	return String(err);
+}
+
 export class V2CompactStrategy implements CompactStrategy {
 	readonly name = "v2 compact";
 
@@ -81,10 +107,7 @@ export class V2CompactStrategy implements CompactStrategy {
 			if (err) return { status: "failed", error: err };
 			return { status: "requested" };
 		} catch (err) {
-			return {
-				status: "failed",
-				error: err instanceof Error ? err.message : String(err),
-			};
+			return { status: "failed", error: describeError(err) };
 		}
 	}
 }
@@ -127,10 +150,7 @@ export class V2BetaCompactStrategy implements CompactStrategy {
 			if (err) return { status: "failed", error: err };
 			return { status: "requested" };
 		} catch (err) {
-			return {
-				status: "failed",
-				error: err instanceof Error ? err.message : String(err),
-			};
+			return { status: "failed", error: describeError(err) };
 		}
 	}
 }
@@ -188,10 +208,7 @@ export class V1SummarizeStrategy implements CompactStrategy {
 			if (err) return { status: "failed", error: err };
 			return { status: "requested" };
 		} catch (err) {
-			return {
-				status: "failed",
-				error: err instanceof Error ? err.message : String(err),
-			};
+			return { status: "failed", error: describeError(err) };
 		}
 	}
 }

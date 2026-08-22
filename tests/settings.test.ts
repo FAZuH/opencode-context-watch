@@ -175,4 +175,76 @@ describe("context_watch_settings (v1)", () => {
 		expect(h.toasts.filter((t) => t.variant === "warning")).toHaveLength(2);
 		h.cleanup();
 	});
+
+	test("a config-file write (TUI path) is applied live via the watcher", async () => {
+		// 60% of the window: under the 90% boot band, over the 50% rewritten band.
+		const h = await createHarness(
+			JSON.stringify({
+				warnPercent: 90,
+				warnTokens: 1_000_000,
+				windowTokens: 100_000,
+				rearmPercent: 5,
+				rearmTokens: 5_000,
+				message: "usage {percent}% {tokens}/{window}",
+			}),
+		);
+		const output1 = await runTransform(h, { input: 55_000, output: 5_000 });
+		expect(output1.messages).toHaveLength(2); // no warning at 60% < 90%
+
+		// Simulate the TUI command writing the config file directly (the server
+		// watcher re-applies it without a settings-tool call). The harness uses
+		// a fake watcher; firing it with a clean-file problem set is what the
+		// real fs.watch watcher would produce for a valid rewrite.
+		writeFileSync(
+			h.configPath,
+			JSON.stringify({
+				warnPercent: 50,
+				warnTokens: 1_000_000,
+				windowTokens: 100_000,
+				rearmPercent: 5,
+				rearmTokens: 5_000,
+				message: "usage {percent}% {tokens}/{window}",
+			}),
+			"utf8",
+		);
+		h.fireWatcher([]);
+
+		const output2 = await runTransform(h, { input: 55_000, output: 5_000 });
+		expect(output2.messages).toHaveLength(3); // warning injected at 60% >= 50%
+		const text = (output2.messages[2].parts[0] as { text: string }).text;
+		expect(text).toContain("60%");
+		h.cleanup();
+	});
+
+	test("a persisted disable (TUI write) gates injection until re-enabled", async () => {
+		const h = await createHarness(BAND);
+		expect(
+			(await runTransform(h, { input: 60_000, output: 10_000 })).messages,
+		).toHaveLength(3); // 70% >= 50%
+
+		// Simulate the TUI disable command writing `enabled: false` directly.
+		writeFileSync(
+			h.configPath,
+			JSON.stringify({ ...JSON.parse(BAND), enabled: false }),
+			"utf8",
+		);
+		h.fireWatcher([]);
+
+		expect(
+			(await runTransform(h, { input: 70_000, output: 10_000 })).messages,
+		).toHaveLength(2); // above band, but disabled via the file
+
+		// Re-enable via the file, not the tool.
+		writeFileSync(
+			h.configPath,
+			JSON.stringify({ ...JSON.parse(BAND), enabled: true }),
+			"utf8",
+		);
+		h.fireWatcher([]);
+
+		expect(
+			(await runTransform(h, { input: 70_000, output: 10_000 })).messages,
+		).toHaveLength(3);
+		h.cleanup();
+	});
 });

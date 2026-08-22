@@ -28,6 +28,7 @@ describe("resolveOptions", () => {
 			expect(o.rearmTokens).toBe(5_000);
 			expect(o.toast).toBe(true);
 			expect(o.verbose).toBe(false);
+			expect(o.enabled).toBe(true);
 			expect(o.message).toContain("{percent}");
 			expect(o.message).toContain("{tokens}");
 			expect(o.message).toContain("{window}");
@@ -158,6 +159,28 @@ describe("resolveOptions", () => {
 			);
 			expect(hasProblemFor(ps, key)).toBe(true);
 			expect(o[key as keyof typeof o]).toBe(key === "toast");
+		});
+	});
+
+	describe("enabled", () => {
+		test("defaults to true with no problems", () => {
+			const { options: o, problems: ps } = resolveOptions({}, EMPTY_ENV);
+			expect(ps).toEqual([]);
+			expect(o.enabled).toBe(true);
+		});
+
+		test("accepts a file boolean", () => {
+			expect(options({ enabled: false }).enabled).toBe(false);
+			expect(options({ enabled: true }).enabled).toBe(true);
+		});
+
+		test("rejects a non-boolean enabled and falls back to true", () => {
+			const { options: o, problems: ps } = resolveOptions(
+				{ enabled: "no" },
+				EMPTY_ENV,
+			);
+			expect(o.enabled).toBe(true);
+			expect(hasProblemFor(ps, "enabled")).toBe(true);
 		});
 	});
 

@@ -3,6 +3,7 @@ import type { LastWarned } from "../context";
 import type { LiveConfig } from "../live";
 import type { ModelInfo, ModelInfoCache } from "../model-info";
 import type { Notifier } from "../notify";
+import type { watchConfigFile } from "../watch";
 
 /**
  * Test-only seams, threaded through the plugin options: an isolated config
@@ -20,6 +21,14 @@ export interface BackendSeams {
 		headers?: Record<string, string>;
 	}) => V2BetaCompactClient;
 	summarizeTimeoutMs?: number;
+	/**
+	 * The config-file watcher factory (tests only). The parallel unit suite
+	 * must not rely on real fs.watch (bun's parallel runner surfaces its
+	 * handles as "Unhandled error between tests" when a watched tmp dir is
+	 * removed mid-test); tests inject a fake that captures the onChange
+	 * callback and fires it manually.
+	 */
+	createWatcher?: typeof watchConfigFile;
 }
 
 /**
@@ -31,7 +40,7 @@ export interface BackendSeams {
  * operations below stay the same under both runtimes.
  */
 export interface RuntimeBackend {
-	/** Adapter-provided test seams (v1 plugin options; v2 passes none). */
+	/** Adapter-provided test seams (threaded through both loaders' options). */
 	readonly seams?: BackendSeams;
 	/** Live config state: the settings tool mutates it; hooks read it per event. */
 	readonly live: LiveConfig;

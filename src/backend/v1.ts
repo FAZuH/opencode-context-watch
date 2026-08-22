@@ -11,6 +11,7 @@ import {
 } from "../compaction";
 import { CONFIG_PATH, type ConfigProblem, loadOptions } from "../config";
 import {
+	type LastWarned,
 	assess,
 	contextTokens,
 	notifyWarning,
@@ -25,6 +26,7 @@ import {
 import { ModelInfoCache } from "../model-info";
 import { Notifier, type NotifyClient } from "../notify";
 import { createWarning } from "../warning";
+import { watchConfigFile } from "../watch";
 import type { BackendSeams, RuntimeBackend } from "./types";
 
 // The plugin's client (opencode v1) satisfies the notify seam.
@@ -110,11 +112,23 @@ export async function createV1Backend(
 		notifier.alwaysLog("error", "invalid config", { problems });
 		void showConfigError(problems);
 	}
+	// Shared by the settings tool's reload and the config-file watcher: a
+	// reload-time problem replaces the retry set, always logs, and can toast
+	// once more (same race-free sync-flag pattern as the load-time path).
+	const reportReloadProblems = (probs: ConfigProblem[]): void => {
+		currentProblems = probs;
+		notifier.alwaysLog("error", RELOAD_PROBLEM_LABEL, {
+			problems: probs,
+		});
+		configErrorShown = false;
+		configToastAttempts = 0;
+		void showConfigError(probs);
+	};
 
 	// sessionID -> model info, cached by system.transform (messages.transform has no model info)
 	const modelCache = new ModelInfoCache();
 	// sessionID -> last warned value per band, to rearm only after a rise
-	const lastWarned = new Map<string, { pct?: number; tokens?: number }>();
+	const lastWarned = new Map<string, LastWarned>();
 
 	// v2 client for the compact_context tool, built once at load. Loaded lazily
 	// (client-only subpath — the full `/v2` entry pulls in the server and would
@@ -197,19 +211,23 @@ export async function createV1Backend(
 		execute: async (args) =>
 			handleSettingsAction(args.action, live, {
 				clearLastWarned: () => backend.lastWarned.clear(),
-				reportProblems: (probs) => {
-					currentProblems = probs;
-					notifier.alwaysLog("error", RELOAD_PROBLEM_LABEL, {
-						problems: probs,
-					});
-					// Reset the load-time flags so a reload problem can toast
-					// once more (same race-free sync-flag pattern).
-					configErrorShown = false;
-					configToastAttempts = 0;
-					void showConfigError(probs);
-				},
+				reportProblems: reportReloadProblems,
 			}),
 	};
+
+	// Config-file watcher: the TUI commands write the config file directly
+	// (atomic rename), so this watcher re-applies it live — reload, clear the
+	// rearm state so new thresholds fire immediately, and report any problems
+	// through the same machinery as the settings tool's reload. The v1 Hooks
+	// object has NO dispose point, so the watcher lives for the plugin's
+	// lifetime (spec-acceptable); it never throws. Tests inject a fake
+	// watcher via the seam; opencode always uses the real fs.watch one.
+	const createWatcher = seam?.createWatcher ?? watchConfigFile;
+	createWatcher(configPath, (problems) => {
+		live.reload();
+		backend.lastWarned.clear();
+		if (problems.length > 0) reportReloadProblems(problems);
+	});
 
 	return {
 		tool: {

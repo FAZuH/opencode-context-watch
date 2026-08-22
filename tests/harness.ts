@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Plugin } from "@opencode-ai/plugin";
 import type { Message, Part } from "@opencode-ai/sdk";
+import type { ConfigProblem } from "../src/config";
 import type { V2CompactClient } from "../src/index";
 import plugin from "../src/index";
+import type { watchConfigFile } from "../src/watch";
 
 const ENV_VARS = [
 	"CONTEXT_WATCH_PERCENT",
@@ -56,6 +58,13 @@ export interface Harness {
 	showToastCalls: () => number;
 	sessionSummarizeCalls: () => number;
 	handlers: Awaited<ReturnType<Plugin>>;
+	/**
+	 * Fire the (fake) config-file watcher's onChange callback with the given
+	 * problems — the parallel unit suite must not rely on real fs.watch
+	 * (bun surfaces its handles as "Unhandled error between tests"), so the
+	 * harness injects a fake watcher that captures this callback.
+	 */
+	fireWatcher: (problems: ConfigProblem[]) => void;
 	cleanup: () => void;
 }
 
@@ -79,6 +88,7 @@ export async function createHarness(
 		env?: Record<string, string>;
 		createOpencodeClientV2?: (config: { baseUrl?: string }) => V2CompactClient;
 		summarizeTimeoutMs?: number;
+		createWatcher?: typeof watchConfigFile;
 	} = {},
 ): Promise<Harness> {
 	const home = mkdtempSync(join(tmpdir(), "context-watch-test-"));
@@ -149,6 +159,20 @@ export async function createHarness(
 		},
 	};
 
+	// The parallel unit suite must not spin up real fs.watch handles (bun's
+	// runner surfaces a watched tmp dir's removal as "Unhandled error between
+	// tests"), so the default watcher is a fake that captures the backend's
+	// onChange callback and exposes it via `fireWatcher`; tests that
+	// specifically need the real fs.watch behavior can inject one via opts.
+	let watcherOnChange: ((problems: ConfigProblem[]) => void) | undefined;
+	const defaultCreateWatcher: typeof watchConfigFile = (
+		_configPath,
+		onChange,
+	) => {
+		watcherOnChange = onChange;
+		return { close: () => {} };
+	};
+
 	// The entry is a plain object now (autodetect shape); the v1 path is the
 	// `server(input, options)` factory, which returns the same hooks object as
 	// the old callable default export.
@@ -156,6 +180,7 @@ export async function createHarness(
 		configPath,
 		createOpencodeClientV2: opts.createOpencodeClientV2,
 		summarizeTimeoutMs: opts.summarizeTimeoutMs,
+		createWatcher: opts.createWatcher ?? defaultCreateWatcher,
 	});
 	await new Promise((r) => setTimeout(r, 0));
 
@@ -168,6 +193,7 @@ export async function createHarness(
 		showToastCalls: () => showToastCalls,
 		sessionSummarizeCalls: () => sessionSummarizeCalls,
 		handlers,
+		fireWatcher: (problems) => watcherOnChange?.(problems),
 		cleanup: () => {
 			rmSync(home, { recursive: true, force: true });
 			for (const v of ENV_VARS) {

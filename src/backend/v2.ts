@@ -5,8 +5,9 @@ import {
 	V2BetaCompactStrategy,
 	requestPostCompact,
 } from "../compaction";
-import { CONFIG_PATH, loadOptions } from "../config";
+import { CONFIG_PATH, type ConfigProblem, loadOptions } from "../config";
 import {
+	type LastWarned,
 	assess,
 	notifyWarning,
 	renderMessage,
@@ -20,18 +21,21 @@ import {
 } from "../live";
 import { ModelInfoCache } from "../model-info";
 import { Notifier, type NotifyClient } from "../notify";
+import { watchConfigFile } from "../watch";
 import type { BackendSeams, RuntimeBackend } from "./types";
 
 /**
  * opencode v2 beta plugin context — the structural subset the backend
- * consumes. Shapes verified against opencode2 v0.0.0-next-17155 by running a
- * reflection probe inside the real loader (`/tmp/opencode/probe2`, see the
- * autodetect plan doc). Note the catalog: on that build the domain
- * (`ctx.catalog.model`) exposes only `{ list, default }` — the model `get`
- * (with `limit.context`) lives on the `catalog.transform` draft, so that is
- * the window lookup path.
+ * consumes. Shapes verified against opencode2 v0.0.0-beta-17898 by running a
+ * reflection probe inside the real loader (`/tmp/opencode/v2-proto`, see the
+ * v2-plugin-fix spec) plus the published beta packages' own `.d.ts`. Note the
+ * catalog: the domain (`ctx.catalog.model`) exposes only `{ list, default }`
+ * — the model `get` (with `limit.context`) lives on the `catalog.transform`
+ * draft, so that is the window lookup path.
  */
 export interface V2PluginContext {
+	/** Inline options from the object-form plugins entry `{package, options}`. */
+	readonly options?: Readonly<Record<string, unknown>>;
 	catalog: {
 		transform<T>(
 			fn: (draft: {
@@ -94,29 +98,29 @@ export interface V2Message {
 }
 
 /**
- * The `tool.transform` draft `add` input — object form. Runtime-verified on
- * next-17155: `add` takes ONE argument (the tool definition object); the
- * `add(name, def)` form breaks tool.transform finalization.
+ * The `tool.transform` draft `add` input — object form. Verified on
+ * beta-17898 (live probe + the beta package's own types): `add` takes ONE
+ * argument, the tool definition `{ name, description, input, options?,
+ * execute }`.
  */
 export interface V2ToolDefinition {
 	name: string;
 	description: string;
 	input: Record<string, unknown>;
-	/** Probe-verified (next-17155): `codemode: false` registers a direct callable tool. */
+	/** `codemode: false` registers a direct, model-callable tool. */
 	options?: { codemode?: boolean };
 	/** The result must be an object (`{ content }`), never a bare string. */
 	execute(input: unknown, ctx: V2ToolContext): Promise<V2ToolResult>;
 }
 
-/** The tool execute result — `{ content: string }` on next-17155. */
+/** The tool execute result — `{ content }` is accepted (`Tool.Result`). */
 export interface V2ToolResult {
 	content: string;
 }
 
 /**
- * The tool executor context. `execute` reads only `sessionID`. The id field
- * name (`id` vs `callID`) is NOT verified against a real beta, so the
- * executor must not rely on it.
+ * The tool executor context. `execute` reads only `sessionID` (the beta
+ * `Tool.Context` also carries id/agent/messageID/progress, unused here).
  */
 export interface V2ToolContext {
 	id?: string;
@@ -148,10 +152,15 @@ export interface V2EventData {
 	[extra: string]: unknown;
 }
 
-/** The local service registration `Service.discover()` returns. */
+/**
+ * The local service registration endpoint `Service.discover()` resolves
+ * (beta-17898: an async read of `<state>/opencode/service.json` returning
+ * `{ url, auth }`, where `auth` carries the basic-auth credentials that
+ * `Service.headers()` turns into the `authorization` header).
+ */
 interface V2ServiceEndpoint {
 	url?: string;
-	auth?: string;
+	auth?: { username?: string; password?: string };
 }
 
 /**
@@ -225,10 +234,21 @@ export const V2Backend = {
 
 		const seam = pluginOptions;
 		const configPath = seam?.configPath ?? CONFIG_PATH;
-		const { options: opts, problems } = loadOptions(configPath);
-		const live = new LiveConfig(configPath, opts);
+		// The host's inline options (object-form plugins entry) layer over the
+		// plugin's own config file: per-key precedence env > ctx.options >
+		// file > default. The overlay is stored on LiveConfig so reload
+		// re-applies it.
+		const overlay: unknown = v2ctx.options;
+		const { options: opts, problems } = loadOptions(configPath, overlay);
+		const live = new LiveConfig(configPath, opts, overlay);
 
 		const notifier = new Notifier(consoleClient, live.notifyFlags);
+
+		// Reload problems (watcher + settings tool) are console/app-log only:
+		// the v2 beta has no server toast surface to retry on.
+		const reportReloadProblems = (probs: ConfigProblem[]): void => {
+			notifier.alwaysLog("error", RELOAD_PROBLEM_LABEL, { problems: probs });
+		};
 
 		// Config problems: log once at setup. There is no toast retry under v2
 		// (no toast surface, and no messages.transform to retry on).
@@ -240,19 +260,22 @@ export const V2Backend = {
 		// model ref); window resolved lazily via the catalog draft below.
 		const modelCache = new ModelInfoCache();
 		// sessionID -> last warned value per band, to rearm only after a rise
-		const lastWarned = new Map<string, { pct?: number; tokens?: number }>();
+		const lastWarned = new Map<string, LastWarned>();
 		// sessionID -> latest ground-truth token sum from the event stream
 		const lastTokens = new Map<string, number>();
 		// providerID:modelID -> resolved window (shared across sessions)
 		const modelWindows = new Map<string, number>();
 		const windowLookups = new Set<string>();
 
-		// The plugin's own compact client, built lazily:
-		// `@opencode-ai/client/promise` is a v2 beta package that is absent
-		// from the v1 line's node_modules, so the import is guarded (never
-		// crashing plugin load) and the specifier is split to keep it out of
-		// the static import graph that `bun build` resolves. A missing package
-		// degrades to an honest "unavailable" failure.
+		// The plugin's own compact client. `@opencode-ai/client/promise` is a
+		// v2 beta package that is absent from the v1 line's node_modules, so
+		// the import is guarded (never crashing plugin load) and the
+		// specifier is split to keep it out of the static import graph that
+		// `bun build` resolves. Verified against beta-17898: `Service.discover()`
+		// is ASYNC and resolves `{ url, auth }` from the daemon's service.json
+		// registration, and `make()` needs a real baseUrl — without a
+		// discovered endpoint there is no usable client, so we skip
+		// construction and degrade to the honest "unavailable" failure.
 		let betaClient: V2BetaCompactClient | undefined;
 		try {
 			const create = seam?.createOpencodeClientV2Beta;
@@ -263,26 +286,32 @@ export const V2Backend = {
 				const clientMod = (await import(`${base}client/promise`)) as {
 					OpenCode?: {
 						make?: (config: {
-							baseUrl?: string;
+							baseUrl: string;
 							headers?: Record<string, string>;
 						}) => V2BetaCompactClient;
 					};
 				};
-				const serviceMod = (await import(`${base}client/promise/service`)) as {
+				// beta-17898 exposes the service module as
+				// `client/promise/service`; some installed copies (e.g.
+				// next-16770) only expose `client/service` — both map to the
+				// same file, so fall back rather than degrade needlessly.
+				const serviceMod = (await import(`${base}client/promise/service`).catch(
+					() => import(`${base}client/service`),
+				)) as {
 					Service?: {
-						discover?: () => V2ServiceEndpoint | undefined;
+						discover?: () => Promise<V2ServiceEndpoint | undefined>;
 						headers?: (
 							endpoint: V2ServiceEndpoint,
 						) => Record<string, string> | undefined;
 					};
 				};
-				const endpoint = serviceMod.Service?.discover?.();
-				betaClient = clientMod.OpenCode?.make?.({
-					baseUrl: endpoint?.url,
-					headers: endpoint
-						? serviceMod.Service?.headers?.(endpoint)
-						: undefined,
-				});
+				const endpoint = await serviceMod.Service?.discover?.();
+				if (endpoint?.url) {
+					betaClient = clientMod.OpenCode?.make?.({
+						baseUrl: endpoint.url,
+						headers: serviceMod.Service?.headers?.(endpoint),
+					});
+				}
 			}
 		} catch (err) {
 			betaClient = undefined;
@@ -320,18 +349,31 @@ export const V2Backend = {
 				),
 		};
 
+		// Config-file watcher: the TUI commands write the config file directly
+		// (atomic rename), so this watcher re-applies it live — reload, clear
+		// the rearm state and the model-window caches (mirroring the settings
+		// tool's reload action), and log any problems. Closed by the cleanup.
+		// Tests inject a fake watcher via the seam; opencode always uses the
+		// real fs.watch one.
+		const createWatcher = seam?.createWatcher ?? watchConfigFile;
+		const watcher = createWatcher(configPath, (problems) => {
+			live.reload();
+			backend.lastWarned.clear();
+			windowLookups.clear();
+			modelWindows.clear();
+			if (problems.length > 0) reportReloadProblems(problems);
+		});
+
 		try {
 			await v2ctx.tool.transform((draft) => {
 				draft.add({
 					name: "compact_context",
 					description:
 						"Compact the current session's context window, freeing space. Call when the session is getting full or the model asks to compact.",
-					// Verified working shape on next-17155 (probe-hook): plain
-					// JSON-Schema `input` + `options: { codemode: false }` (registers
-					// a direct, callable tool) + `{ content }` object return. The
-					// docs' two-arg `add(name, tool, options?)` form crashes this
-					// build (`TypeError: O.name.replace`); a bare string return
-					// crashes the runner (`"output"in c`).
+					// Verified working shape on beta-17898 (live probe): plain
+					// JSON-Schema `input` + `options: { codemode: false }`
+					// (registers a direct, callable tool) + `{ content }` object
+					// return. A bare string return crashes the runner.
 					input: {
 						type: "object",
 						properties: {},
@@ -365,10 +407,7 @@ export const V2Backend = {
 						return {
 							content: handleSettingsAction(action, live, {
 								clearLastWarned: () => backend.lastWarned.clear(),
-								reportProblems: (probs) =>
-									notifier.alwaysLog("error", RELOAD_PROBLEM_LABEL, {
-										problems: probs,
-									}),
+								reportProblems: reportReloadProblems,
 								// A windowTokens null<->N change must re-resolve the
 								// model window instead of reusing cached lookups.
 								clearWindowLookups: () => {
@@ -388,10 +427,10 @@ export const V2Backend = {
 		}
 
 		// Resolve the model window via the catalog transform draft.
-		// Runtime-verified (next-17155): `catalog.transform` invokes the
-		// draft callback synchronously — `draft.model.get(providerID,
-		// modelID)` returns the model including `limit.context` without any
-		// await, so the lookup result is available to the same hook that
+		// Verified on beta-17898: `catalog.transform` invokes the draft
+		// callback synchronously (`draft.model.get(providerID, modelID)`
+		// returns the `Model.Info` including `limit.context` without any
+		// await), so the lookup result is available to the same hook that
 		// starts it. Looked up once per `providerID:modelID`.
 		const lookupWindow = (
 			providerID: string,
@@ -548,6 +587,7 @@ export const V2Backend = {
 
 		return async () => {
 			stopped = true;
+			watcher.close();
 			try {
 				await iterator?.return?.(undefined);
 			} catch (err) {
