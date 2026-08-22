@@ -51,7 +51,7 @@ Guard everything that can fail on a beta build. The `@opencode-ai/client/promise
 
 ### Separate v2-only package on a branch
 - Pros: Each package targets one runtime cleanly.
-- Cons: Two packages to build, install, and maintain; the user must choose. This was the original plan (`docs/plan/ddd-refactor-and-v2.md`); the single-entry approach supersedes it.
+- Cons: Two packages to build, install, and maintain; the user must choose. This was the original plan (`.scratch/complete/2026-08-13_ddd-refactor-and-v2.md`); the single-entry approach supersedes it.
 
 ### `Plugin.define`-guarded dynamic import
 - Pros: Follows the documented v2 API.
