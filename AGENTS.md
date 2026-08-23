@@ -112,16 +112,25 @@ tooling) and formats JSON files with 2-space indent to match the committed style
     `lastWarned.clear()` (v2 also clears `windowLookups`/`modelWindows`) +
     reload-problem reporting. The v1 Hooks object has NO dispose point, so the
     v1 watcher lives for the plugin lifetime; v2 closes it first in its cleanup.
-  - `src/tui.ts` is a SEPARATE plugin entry (`{ id, tui }`) because both
-    loaders reject a module default-exporting `server` AND `tui`; register it
-    by FILE path in `tui.json`. `buildTuiCommands(deps)` is pure with injected
-    fs/toast/env deps; four commands (`Context-watch: status|reload
-    config|disable warning|enable warning`, slash `/context-watch-*`) whose
-    onSelect bodies are try/catch-wrapped (error toast, never throw). Reload
-    refuses to create a missing config file; status resolves displayed
-    settings with `process.env` (`ctx.options` is not available in the TUI
-    host). Tool disable/enable and TUI disable/enable persist the same
-    `enabled` key via `updateConfigFile`.
+  - `src/tui.ts` is a SEPARATE plugin entry (`{ id, tui, setup }`) because
+    both loaders reject a module default-exporting `server` AND `tui`; the v2
+    beta TUI host instead validates `{ id, setup }` and rejects modules
+    without `setup`, so one object carries both functions (each loader uses
+    its own key and tolerates the other's); register it by FILE path in
+    `tui.json`. `buildTuiHandlers(deps)` holds the four shared never-throw
+    bodies; `buildTuiCommands(deps)` shapes them for v1 and
+    `buildV2KeymapCommands(deps)` for v2 — ONE `ctx.keymap.layer`
+    (`mode: "global"`, palette-only commands `bind: false`, group
+    "Context-watch", slash `/context-watch-*`; ids `context_watch.*`);
+    registrations auto-unwind on activation dispose. V2 mounts the layer via
+    an invisible `ui.slot({ append: "app" })` whose render runs inside the
+    app's provider tree — a DIRECT `ctx.keymap.layer(...)` call from setup
+    throws (`Keymap.Provider is missing`) because activation is a plain async
+    function outside the Solid tree. Reload refuses to create
+    a missing config file; status resolves displayed settings with
+    `process.env` (`ctx.options` is not available in the TUI host). Tool
+    disable/enable and TUI disable/enable persist the same `enabled` key via
+    `updateConfigFile`.
 - Tests inject a FAKE watcher via the `createWatcher` BackendSeams option:
   bun's parallel runner surfaces real fs.watch handles from removed tmp dirs
   as "Unhandled error between tests", so only dedicated watch tests use the
