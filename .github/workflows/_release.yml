@@ -33,6 +33,7 @@ jobs:
       tag: ${{ steps.changelog.outputs.tag }}
       skipped: ${{ steps.changelog.outputs.skipped }}
       changelog: ${{ steps.changelog.outputs.changelog }}
+      mode: ${{ steps.mode.outputs.mode }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,6 +43,12 @@ jobs:
 
       - name: Fetch All Tags
         run: git fetch --tags --force origin '+refs/tags/*:refs/tags/*'
+
+      - name: Read changelog mode
+        id: mode
+        run: |
+          MODE=$(cat .github/changelog-mode 2>/dev/null || echo auto)
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
 
       - name: Set Up version.json
         run: |
@@ -133,6 +140,7 @@ jobs:
       (needs.publish-npm.result == 'success' || needs.publish-npm.result == 'skipped')
     outputs:
       tag: ${{ steps.commit.outputs.tag }}
+      changelog-body: ${{ steps.manual-body.outputs.body }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -176,7 +184,20 @@ jobs:
           skip-version-file: true
           skip-git-pull: true
           skip-on-empty: false
+          output-file: ${{ needs.changelog.outputs.mode == 'manual' && 'false' || 'CHANGELOG.md' }}
           git-push: false
+
+      - name: Materialize [Unreleased] section
+        id: manual-body
+        if: needs.changelog.outputs.mode == 'manual'
+        run: |
+          BODY="$(node ./.github/scripts/materialize-unreleased.cjs CHANGELOG.md "${{ steps.commit.outputs.tag }}" "$(date -u +%Y-%m-%d)")"
+          git add CHANGELOG.md 2>/dev/null || true
+          {
+            echo "body<<EOF"
+            printf '%s\n' "$BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Clean stale artifacts and push release
         run: |
@@ -212,13 +233,15 @@ jobs:
       (needs.publish-npm.result == 'success' || needs.publish-npm.result == 'skipped') &&
       needs.publish-changelog.result == 'success'
     runs-on: ubuntu-latest
+    env:
+      RELEASE_BODY: ${{ needs.changelog.outputs.mode != 'manual' && needs.changelog.outputs.changelog || needs.publish-changelog.outputs.changelog-body }}
     steps:
       - name: Create Release
         id: release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.publish-changelog.outputs.tag }}
-          body: ${{ needs.changelog.outputs.changelog }}
+          body: ${{ env.RELEASE_BODY }}
 
       - name: Post Release on Discord
         uses: tsickert/discord-webhook@v6.0.0
@@ -226,6 +249,6 @@ jobs:
           webhook-url: ${{ secrets.DISCORD_RELEASE_WEBHOOK_URL }}
           embed-color: "9498256"
           embed-title: "${{ inputs.package-name }} ${{ needs.publish-changelog.outputs.tag }}"
-          embed-description: ${{ needs.changelog.outputs.changelog }}
+          embed-description: ${{ env.RELEASE_BODY }}
           embed-url: ${{ steps.release.outputs.url }}
           embed-timestamp: ${{ github.event.head_commit.timestamp }}

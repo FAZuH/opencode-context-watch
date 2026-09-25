@@ -8,10 +8,10 @@ not affect version bump logic.
 
 | Scope     | Area                                                                 |
 |-----------|----------------------------------------------------------------------|
-| `plugin`  | Core plugin behavior in `src/index.ts` — transforms, threshold and rearm bands, warning injection, toast and logging |
-| `config`  | Configuration schema, option defaults, env overrides, and `opencode-context-watch.example.json` |
+| `plugin`  | Core plugin behavior in `src/index.ts` — the context hook, threshold and rearm bands, warning injection, and logging |
+| `config`  | Option validation and defaults in `src/config.ts` — `ctx.options` schema, per-key fallback, problem messages |
 | `docs`    | Documentation — `README.md`, `docs/`, `AGENTS.md`                     |
-| `dev`     | Development tooling — `dev.sh`, `package.json` scripts, biome/tsc/bundle setup |
+| `dev`     | Development tooling — `package.json` scripts, biome/tsc/bundle setup  |
 | `release` | Version bumps and release commits (for example `chore(release)`)      |
 
 ## Choosing a scope

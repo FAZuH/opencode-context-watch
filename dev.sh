@@ -1,7 +1,7 @@
 #!/bin/bash
 # Development helper script
 # Usage: ./dev.sh [command1] [command2] ...
-#   commands: format | lint | typecheck | bundle | all | help
+#   commands: format | lint | typecheck | test | bundle | all | help
 #   plus any commands provided by modules (scripts/dev-*.sh, dev/*.sh, dev-*.sh)
 #   Multiple commands can be specified and will execute left to right
 
@@ -57,6 +57,13 @@ cmd_typecheck() {
 }
 dev_desc typecheck "Run typecheck with \"bunx tsc --noEmit\""
 
+cmd_test() {
+    inf "Running tests..."
+    bun test
+    scs "Tests completed"
+}
+dev_desc test "Run the test suite with \"bun test\""
+
 cmd_bundle() {
     inf "Building bundle..."
     bun build src/index.ts --outdir dist
@@ -69,10 +76,11 @@ cmd_all() {
     cmd_format
     cmd_lint
     cmd_typecheck
+    cmd_test
     cmd_bundle
     scs "All tasks completed"
 }
-dev_desc all "Run format, lint, typecheck, and bundle in sequence"
+dev_desc all "Run format, lint, typecheck, test, and bundle in sequence"
 
 # --- Module discovery ---
 
@@ -113,9 +121,10 @@ Examples:
   ./dev.sh format                  # Format code
   ./dev.sh lint                    # Run linter
   ./dev.sh typecheck               # Run typecheck
+  ./dev.sh test                    # Run tests
   ./dev.sh bundle                  # Build bundle
   ./dev.sh format lint             # Format then lint
-  ./dev.sh all                     # Run format, lint, typecheck, bundle
+  ./dev.sh all                     # Run format, lint, typecheck, test, bundle
 
 EOF
 }

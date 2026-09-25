@@ -2,54 +2,104 @@
 
 ## Overview
 
-An opencode plugin that warns when a session's context window usage crosses a configurable threshold, injecting a synthetic user message so the model can prepare for compaction.
+An OpenCode **V2** plugin that warns when a session's context window usage crosses
+a configurable threshold, injecting a synthetic user message so the model can
+prepare for compaction. V1 support is removed (see `docs/decisions/ADR-004-v2-only-rewrite.md`).
 
 ## Build Commands
 
 ```bash
-# Typecheck
-npx tsc --noEmit
-
-# Test typecheck (tests typechecked separately; root tsconfig is src-only)
-npx tsc -p tsconfig.test.json --noEmit
+# Install (bun.lock is the only lockfile)
+bun install
 
 # Tests (bun:test, tests/ dir)
 bun test
 
-# Bundle check
-bun build src/index.ts --outdir dist
+# Typecheck (src only)
+npx tsc --noEmit
 
-# Format (biome)
+# Test typecheck (tests typechecked separately)
+npx tsc -p tsconfig.test.json --noEmit
+
+# Format (biome, auto-fix)
 bunx biome format --write .
 
-# Lint (biome)
-bunx biome check .
+# Lint + format check (auto-fix with --write)
+bunx biome check --write .
+
+# Bundle check
+bun build src/index.ts --outdir dist
 ```
 
-Note: `biome.json` at the repo root ignores `.github/.config.cjs` (release-changelog
-tooling) and formats JSON files with 2-space indent to match the committed style.
-`bunx biome check .` is clean at HEAD.
+## Verified V2 runtime facts (OpenCode 2.0.16, probed 2026-09-25)
+
+- A plain object default export `{ id, setup(ctx) }` with no runtime OpenCode
+  package import loads under `.opencode/plugins/<name>/index.ts` and from the
+  `plugins: [{ package, options }]` config form. `setup` may be async; the value
+  it returns is called on cleanup.
+- `ctx.options` is the object from `plugins[].options`; absent when the config
+  form carries no `options`.
+- `await ctx.model.list()` resolves `{ location, data: Model.Info[] }`, NOT a
+  bare array. `Model.Info` has `id`, `providerID`, and `limit.context`.
+- `ctx.session.hook("context", cb)` resolves a registration with `dispose()`.
+  The event carries `sessionID`, `model: { id, providerID, variant }`,
+  `messages`, `system`, `tools`, `options`, `agent`.
+- Appending `{ role: "user", content: [{ type: "text", text }] }` to
+  `event.messages` is accepted and the model sees it.
+- `ctx.event.subscribe({ signal })` yields `{ type, data }` events.
+  `session.step.ended` data has `sessionID` and
+  `tokens: { input, output, reasoning, cache: { read, write } }` for the latest
+  step. `session.usage.updated` is cumulative session consumption, NOT the
+  current context size — ignore it.
+- `ctx.session.compact` does not exist. `ctx.session.command` requires
+  `{ name }` and there is no compact command. Do not add a compaction tool.
+- `ctx.tool.transform` custom tools take object definitions and return
+  `{ content }`, but this plugin needs no tool.
 
 ## Critical Implementation Notes
 
-- The injected warning is TRANSIENT — it is pushed into the current transform call's in-memory messages array and is never persisted to the session store. The session loop re-reads messages from the store each step, so the warning must be pushed on EVERY `experimental.chat.messages.transform` call while above threshold. The rearm band (`lastWarned`) gates only the toast + verbose log, NOT the injection.
-- Token ground truth = the most recent completed assistant message's `input + output + reasoning + cache.read + cache.write` (matches the TUI context meter). Do not sum `tokens.input` across messages — each assistant message's `tokens.input` is the whole context at request time and would overcount.
-- The model window is cached per sessionID via `experimental.chat.system.transform` (`input.model.limit.context`); `messages.transform` has no model info.
-- The current model `opencode/deepseek-v4-flash-free` has a 200k window (NOT 1M — that's `deepseek/deepseek-v4-flash`).
-- Config is read once at load time; changes require an opencode restart.
-- Config validation lives in `resolveOptions(raw, env)` (pure, exported): env > file > default precedence, per-key fallback to defaults, each bad value reported as a `{ key, message }` problem. Invalid config shows a TUI error toast (variant `error`) at load + once more on the first `messages.transform` if the load toast failed; it ALWAYS fires even when `toast: false`. The toast path is race-free (synchronous flags, no `.then` mutation, attempts capped at 3).
-- Tests use a test-only `configPath` seam on the plugin factory (`plugin({ client }, { configPath })`) because Node/bun `os.homedir()` caches after the first call — per-test HOME isolation does NOT work.
-- The `compact_context` tool is ALWAYS registered; `execute(args, ctx)` calls `triggerCompact(ctx.sessionID)`. Primary path: the lazily-built v2 client, `await v2Client.v2.session.compact({ sessionID })`. On any v2 failure or resolved-error it falls back to v1 `client.session.summarize({ path: { id: sessionID }, body: { providerID, modelID, auto: true } })`, using the per-session model info cached by `experimental.chat.system.transform` (`providerID` from `input.model.providerID`, `modelID` from `input.model.id`, window from `input.model.limit.context`). If the cache has no model for the session, it returns `"Compaction failed: <detail>"` WITHOUT calling summarize. `auto: true` makes opencode's `experimental.compaction.autocontinue` hook fire for tool-triggered compactions. The v2 `session.compact` endpoint is a server-side hard stub on opencode 1.18.11 (resolves `{ error: { _tag: "ServiceUnavailableError", message: "Session compact is not available yet" } }`), so on that build the summarize fallback is the path that actually compacts. The old v1 command fallback is DROPPED — proven dead (`UnknownError` on 1.18.11). It NEVER throws — returns "Compaction requested." / "Compaction failed: <err>".
-- The v2 client is built once at load via dynamic `import("@opencode-ai/sdk/v2/client")` + `createOpencodeClient({ baseUrl: serverUrl?.href })` — `PluginInput.serverUrl` is a URL, so pass `.href`. The import MUST be the client-only `/v2/client` subpath: the full `/v2` entry pulls in `cross-spawn`/`child_process` and breaks `bun build` browser-mode. A missing/failed v2 import degrades to the v1 fallback (never crashes plugin load). Test seam: `createOpencodeClientV2` plugin option returning a structural `V2CompactClient` (`{ v2: { session: { compact } } }`).
-- SDK 1.18.11 gotcha: v1 `command`/`promptAsync` live on top-level `client.session.*`, NOT `client.app.session.*` (`App` only has `log`/`agents`); v2 `compact` lives on `v2Client.v2.session` (Session3), NOT top-level `v2Client.session` (Session2 lacks `compact`).
-- `experimental.compaction.autocontinue` hook: always set `output.enabled = false` (suppress opencode's synthetic continue). When `postCompactContinue: true`, also fire-and-forget `client.session.promptAsync({ path: { id: input.sessionID }, body: { agent: input.agent, parts: [{ type: "text", text: opts.postCompactMsg }] } })` — a REAL persisted user message (`.catch` + log, tolerated races, never throws). When off, nothing is sent after compaction.
-- Config keys: `postCompactContinue` (boolean, default `false`; when true, send a message after compaction; env `CONTEXT_WATCH_POST_COMPACT_CONTINUE` accepts literal "true"/"false"/numeric strings — anything else pushes a problem and falls back to file/default) and `postCompactMsg` (string, default "[context-watch] Session context was compacted. Continue your work from where you left off, keeping replies concise."; env `CONTEXT_WATCH_POST_COMPACT_MSG`).
+- The injected warning is TRANSIENT — it is appended to the current hook call's
+  in-memory messages array and is never persisted. The session loop re-reads
+  messages from the store each step, so the warning must be appended on EVERY
+  above-threshold `context` hook call. The rearm band (`lastWarned`) gates only
+  the verbose log, NOT the injection.
+- Token ground truth is the most recent completed step's
+  `input + output + reasoning + cache.read + cache.write` (matches the context
+  meter). Do not sum `input` across steps — each step's `input` is the whole
+  context at request time and would overcount.
+- The usage cache is ONE model request behind: verified live on 2.0.16,
+  `session.step.ended` can be published after the next `context` hook has
+  already run, so the first one or two requests of a session have no sample and
+  cannot warn. Do not "fix" this with a per-hook `ctx.session.context` call — it
+  re-serializes the whole transcript on every request.
+- `ctx.session.get({ sessionID }).tokens` is the CUMULATIVE session total (it
+  equals `session.usage.updated`), not the per-step context size. It is not a
+  usable sample.
+- Plugin `console.log`/`console.error` do not reach `opencode2 run --print-logs`
+  output; the `verbose` line is only visible in a real service log.
+- Config comes only from `ctx.options`, resolved once at setup. There is no
+  config file, no env parsing, and no watcher. Invalid values fall back per key;
+  each problem is `console.error`-logged and the good keys still apply.
+- Options are read at `setup`, so a config change needs an opencode restart.
+- The model-window map is built once at setup from `ctx.model.list().data`. A
+  failed list is tolerated: the percent band is disabled and the tokens band
+  still fires. Windows are keyed `providerID/modelID` from `event.model`.
+- The plugin has no runtime dependency on `@opencode/*` or `@opencode-ai/*`. The
+  V2 context members it calls are declared structurally in `src/types.ts`;
+  widen them only from a live probe, never from a package type.
+- The event loop must never reject into the session: it is wrapped, and it exits
+  quietly when the abort signal fires. Setup's cleanup aborts the stream and
+  disposes the hook registration.
 
 ## Code Style
 
-- TypeScript, strict mode, `tsconfig.json` at repo root (lib es2022 + dom, types node).
-- No comments unless they explain non-obvious behavior (this plugin has several such comments; keep them).
-- Conventional Commits with `changelog:` body key per `docs/dev/commit-changelog.md` conventions; scopes per `docs/dev/commit-scopes.md`.
+- TypeScript, strict mode, `tsconfig.json` at repo root (lib es2022 + dom, types
+  node). Biome formats with tabs.
+- No comments unless they explain non-obvious behavior (transient injection,
+  step.ended vs usage.updated); keep those, drop narration.
+- Conventional Commits with `changelog:` body key per `docs/dev/commit-changelog.md`
+  conventions; scopes per `docs/dev/commit-scopes.md`.
+- `CHANGELOG.md` is autogenerated from commit metadata. Never hand-edit it.
 
 ## License
 
