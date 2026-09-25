@@ -1,13 +1,13 @@
-import type { Message, Part } from "@opencode-ai/sdk";
-
 /**
  * Context module — the session context-usage assessment domain.
  *
- * Pure functions that turn raw message lists and config thresholds into a
- * concrete assessment: how full the window is, whether a band is crossed,
- * and whether the user-facing notification should re-fire (the rearm rule).
- * No client access, no side effects — the composition root routes the result.
+ * Pure functions that turn one completed step's token usage plus config
+ * thresholds into a concrete assessment: how full the window is, whether a
+ * band is crossed, and whether the log line should re-fire. The composition
+ * root routes the result.
  */
+
+import type { ContextMessage, StepTokens } from "./types";
 
 /**
  * The threshold settings that drive the assessment. A subset of the resolved
@@ -31,18 +31,36 @@ export interface Assessment {
 	pct?: number;
 	overPercent: boolean;
 	overTokens: boolean;
-	/** The transient warning must be injected on every step above a band. */
+	/** The warning must be appended on every step above a band. */
 	shouldInject: boolean;
-	/** The toast + verbose log fire only on a rearm rise. */
+	/** The verbose log fires only on a rearm rise. */
 	shouldNotify: boolean;
 	/** The `lastWarned` value to store when `shouldNotify` is true. */
 	next: LastWarned;
 }
 
 /**
+ * Context size for one completed step, matching opencode's TUI context meter:
+ * `input + output + reasoning + cache.read + cache.write`. Never sum `input`
+ * across steps — each step's `input` is the whole context at request time, so
+ * a sum overcounts. Returns undefined when there is no usable sample yet.
+ */
+export function usageTotal(tokens: StepTokens | undefined): number | undefined {
+	const input = tokens?.input ?? 0;
+	if (input <= 0) return undefined;
+	return (
+		input +
+		(tokens?.output ?? 0) +
+		(tokens?.reasoning ?? 0) +
+		(tokens?.cache?.read ?? 0) +
+		(tokens?.cache?.write ?? 0)
+	);
+}
+
+/**
  * Assess a context sample against the threshold bands (OR semantics) and the
- * rearm rule. Pure: given the same inputs it returns the same assessment and
- * mutates nothing — the caller owns storing `next`.
+ * rearm rule. Pure: same inputs, same assessment, no mutation — the caller
+ * owns storing `next`.
  */
 export function assess(
 	opts: AssessOptions,
@@ -70,36 +88,10 @@ export function assess(
 		shouldNotify: pctReArmed || tokensReArmed,
 		next: {
 			...last,
-			...(pctReArmed && overPercent ? { pct } : {}),
-			...(tokensReArmed && overTokens ? { tokens } : {}),
+			...(pctReArmed ? { pct } : {}),
+			...(tokensReArmed ? { tokens } : {}),
 		},
 	};
-}
-
-/**
- * Return the provider-reported context size, matching opencode's TUI context
- * meter: the most recent completed assistant message's
- * `input + output + reasoning + cache.read + cache.write`. This is the ground
- * truth for how full the window actually is.
- */
-export function contextTokens(
-	messages: { info: Message; parts: Part[] }[],
-): number | undefined {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const info = messages[i].info;
-		if (info.role !== "assistant") continue;
-		const t = info.tokens;
-		if (!t || !t.input || t.input <= 0) continue;
-		if (!t.output || t.output <= 0) continue;
-		return (
-			t.input +
-			(t.output ?? 0) +
-			(t.reasoning ?? 0) +
-			(t.cache?.read ?? 0) +
-			(t.cache?.write ?? 0)
-		);
-	}
-	return undefined;
 }
 
 /**
@@ -116,4 +108,13 @@ export function renderMessage(
 		.replaceAll("{percent}", String(Math.round(pct ?? 0)))
 		.replaceAll("{tokens}", tokens.toLocaleString())
 		.replaceAll("{window}", window?.toLocaleString() ?? "unknown");
+}
+
+/**
+ * The synthetic message carrying the warning to the model. It lives only in
+ * the current hook call's array — opencode never persists it — so the caller
+ * must append one on every above-threshold request.
+ */
+export function warningMessage(text: string): ContextMessage {
+	return { role: "user", content: [{ type: "text", text }] };
 }
