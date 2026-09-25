@@ -1,7 +1,7 @@
 # ADR-001: Inject warnings as transient synthetic user messages
 
 ## Status
-Superseded by [ADR-003](ADR-003-v2-only-rewrite.md) (2026-09-25). The decision
+Superseded by [ADR-004](ADR-004-v2-only-rewrite.md) (2026-09-25). The decision
 below stands: the warning is still a transient synthetic user message, injected
 on every above-threshold request. What changed is the seam — the V2
 `ctx.session.hook("context")` replaces `experimental.chat.messages.transform`,

@@ -4,8 +4,8 @@ An [OpenCode](https://opencode.ai) **V2** plugin that warns the agent when a
 session's context window usage crosses a threshold, so it can wrap up the current
 step or prepare for compaction before the window fills.
 
-V1 support is gone: see [ADR-003](decisions/ADR-003-v2-only-rewrite.md) for the
-decision and the supersession of ADR-001/ADR-002.
+V1 support is gone: see [ADR-004](decisions/ADR-004-v2-only-rewrite.md) for the
+decision and the supersession of ADR-001, ADR-002, and ADR-003.
 
 ## Runtime contracts (OpenCode 2.0.16, probed 2026-09-25)
 

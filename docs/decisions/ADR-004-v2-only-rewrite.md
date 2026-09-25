@@ -1,7 +1,9 @@
-# ADR-003: OpenCode V2 only
+# ADR-004: OpenCode V2 only
 
 ## Status
-Accepted
+Accepted. Supersedes [ADR-001](ADR-001-inject-warnings.md),
+[ADR-002](ADR-002-self-compact-tool-and-message.md), and
+[ADR-003](ADR-003-runtime-autodetection.md).
 
 ## Date
 2026-09-25

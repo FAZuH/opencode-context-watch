@@ -4,7 +4,7 @@
 
 An OpenCode **V2** plugin that warns when a session's context window usage crosses
 a configurable threshold, injecting a synthetic user message so the model can
-prepare for compaction. V1 support is removed (see `docs/decisions/ADR-003-v2-only-rewrite.md`).
+prepare for compaction. V1 support is removed (see `docs/decisions/ADR-004-v2-only-rewrite.md`).
 
 ## Build Commands
 
