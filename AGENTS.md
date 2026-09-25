@@ -29,7 +29,14 @@ bunx biome check --write .
 
 # Bundle check
 bun build src/index.ts --outdir dist
+
+# Everything above through the shared helper
+./dev.sh all
 ```
+
+`dev.sh` is synced from `~/Projects/project-ops` (the `typescript` module). Never
+hand-edit or delete it here; change it centrally and run
+`./sync.sh push typescript opencode-context-watch`.
 
 ## Verified V2 runtime facts (OpenCode 2.0.16, probed 2026-09-25)
 
