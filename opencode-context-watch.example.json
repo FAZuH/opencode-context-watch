@@ -1,6 +1,0 @@
-{
-  "warnPercent": 0.75,
-  "warnTokens": 150000,
-  "rearmPercent": 2,
-  "message": "[context-watch] Context window usage is at {percent}% ({tokens}/{window} tokens). The session is getting full: wrap up the current step soon, keep replies concise, avoid re-reading large files, and be ready to prepare for compaction if you continue."
-}
