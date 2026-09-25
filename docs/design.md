@@ -1,137 +1,153 @@
 # opencode-context-watch: Design & Technical Reference
 
-An [opencode](https://opencode.ai) plugin that warns the agent when a session's context window usage crosses a threshold, so it can wrap up the current step or prepare for compaction before the window fills.
+An [OpenCode](https://opencode.ai) **V2** plugin that warns the agent when a
+session's context window usage crosses a threshold, so it can wrap up the current
+step or prepare for compaction before the window fills.
+
+V1 support is gone: see [ADR-003](decisions/ADR-003-v2-only-rewrite.md) for the
+decision and the supersession of ADR-001/ADR-002.
+
+## Runtime contracts (OpenCode 2.0.16, probed 2026-09-25)
+
+| Member | Shape | Used for |
+|--------|-------|----------|
+| `ctx.options` | the object from `plugins[].options`, absent when unset | configuration |
+| `await ctx.model.list()` | `{ location, data: Model.Info[] }` — not a bare array | the model-window map |
+| `ctx.session.hook("context", cb)` | resolves `{ dispose() }`; event has `sessionID`, `model: { id, providerID, variant }`, `messages` | the per-request warning |
+| `event.messages` | mutable array; appending `{ role: "user", content: [{ type: "text", text }] }` is accepted | carrying the warning to the model |
+| `ctx.event.subscribe({ signal })` | async iterable of `{ type, data }`; `session.step.ended` data has `sessionID` and `tokens` | the usage cache |
+| `ctx.session.compact` | **absent** | — |
+
+`session.usage.updated` also arrives on that stream. It is cumulative
+consumption for the whole session, not the current context size, so the plugin
+ignores it.
 
 ## Architecture
 
-The plugin hooks two experimental opencode lifecycle events in one turn:
-
 ```
-model request ──► experimental.chat.system.transform ──► experimental.chat.messages.transform ──► provider
-                        │                                          │
-                        └─ cache window (per sessionID)             └─ read context tokens,
-                             from input.model.limit.context             check thresholds,
-                                                                        inject synthetic warning
+setup ──► resolveOptions(ctx.options)          → options + problems
+      ──► ctx.model.list().data                 → "providerID/modelID" → context window
+      ──► ctx.event.subscribe({ signal })       → sessionID → last step usage
+      ──► ctx.session.hook("context", cb)       → assess → append warning
+      └─► returns cleanup: abort stream, dispose registration
 ```
 
-| Hook | Role |
-|------|------|
-| `experimental.chat.system.transform` | Runs once per turn with model metadata. Caches `input.model.limit.context` (the model's context window) per `sessionID` in `windowCache`. This is the ONLY place model info is available. |
-| `experimental.chat.messages.transform` | Runs with the fully assembled message list. Computes the current context size, compares against thresholds, and pushes a synthetic user message into `output.messages` so the warning reaches the provider as part of the conversation. |
+```
+model request ──► session.step.ended ──► usage cache (per session)
+                                │
+model request ──► "context" hook ──► usageTotal + model window ──► assess
+                                                                    │
+                                        above a band ───────────────┤
+                                                                    ▼
+                                        append transient warning to event.messages
+```
 
-### Context-size ground truth
+## Context-size ground truth
 
-`contextTokens()` (`src/index.ts:110`) walks the message list from the most recent assistant message backwards and returns the first completed one's:
+`usageTotal()` (`src/context.ts`) adds one completed step's buckets:
 
 ```
 input + output + reasoning + cache.read + cache.write
 ```
 
-This is the same number opencode's TUI context meter shows. Two correctness rules follow from this:
+This is the number opencode's context meter shows. Two rules follow:
 
-- **Never sum `tokens.input` across messages.** Each assistant message's `tokens.input` is the *whole context at request time* (a snapshot), so summing overcounts badly.
-- Skip any assistant message whose `tokens.input` or `tokens.output` is `<= 0` (in-flight/empty) — only a completed message is a valid sample.
+- **Never sum `input` across steps.** Each step's `input` is the whole context at
+  request time, so a sum overcounts badly.
+- A step with no `input` is not a sample; `usageTotal` returns `undefined` and
+  the request is skipped.
 
-### Threshold model: dual band, OR semantics
+## Event-drain ordering: the cache is one request behind
 
-The plugin warns when **either** band is crossed (`src/index.ts:159-162`):
+`session.step.ended` is the only per-step context-size signal on V2 (the
+`context` hook's messages carry no tokens, and `ctx.session.get().tokens` is the
+cumulative session total). A live 2.0.16 run shows the event is published
+*after* the next request has been assembled:
 
-- **Percent band** — `tokens / window >= warnPercent`. Requires a known model window; when the window is unknown this band is disabled.
-- **Tokens band** — `tokens >= warnTokens`. Absolute, window-independent.
+```
+context hook (3 messages)  cached: null
+session.tool.success
+session.step.ended         tokens 5522/18/8/cr3456
+context hook (5 messages)  cached: 5522/…     <- usable from here on
+```
 
-This means `warnPercent: 0.77` with `warnTokens: 150000` warns whichever comes first. For a 200k window model, 0.77 is 154k tokens — the percent band fires first. On a small-window model, the tokens band can fire first.
+So the cache trails by one model request: the first one or two requests of a
+session have no sample and cannot warn; every above-threshold request after that
+is injected. That is the right trade for a "wrap up soon" hint, and it is why the
+plugin does not call `ctx.session.context` per hook to re-read the transcript
+and serialize the whole thing on every request.
 
-### Rearm band
+Two other measured details: `session.usage.updated` and
+`ctx.session.get({ sessionID }).tokens` are the same cumulative figure, and
+plugin `console.log` does not reach `opencode2 run --print-logs`, so the verbose
+line is only visible in a real service log.
 
-`lastWarned` maps `sessionID → { pct, tokens }` (last value each band was notified at). A band re-notifies (toast + verbose log) only after rising by `rearmPercent` points or `rearmTokens` tokens since the last notify. **The rearm band does NOT gate the model injection** — see the critical gotcha below.
+## Threshold model: dual band, OR semantics
 
-### Warning injection
+- **Percent band** — `usage / window >= warnPercent`. Needs a known window
+  (`windowTokens`, else the setup-time model list, keyed `providerID/modelID`).
+  Unknown window disables this band.
+- **Tokens band** — `usage >= warnTokens`. Absolute, window-independent.
 
-When above threshold, the plugin pushes a synthetic user message (`role: "user"`, `synthetic: true`) carrying the rendered template (`{percent}` `{tokens}` `{window}` placeholders replaced). The message ID/time are generated fresh each push (`msg_cw_<base36 timestamp>`). The agent/model metadata are cloned from the last real user message when available, so the synthetic message looks like a normal user turn to the provider.
+## Rearm band and the transient injection
 
-## Compact_context tool and post-compaction message
+`lastWarned` maps `sessionID → { pct, tokens }` to the value each band last
+logged at. A band re-logs only after rising `rearmPercent` points or
+`rearmTokens` tokens. **The rearm never gates the injection.**
 
-The plugin also gives the agent a way to compact its own session, plus a way to control what the session does after compaction.
-
-### Compact_context tool
-
-The plugin registers a `compact_context` tool (`src/index.ts:501`). The tool is always registered; there is no opt-out config. The agent calls it when the session is getting full. Its `execute(args, ctx)` calls `triggerCompact(ctx.sessionID)` (`src/index.ts:472`), which works like this:
-
-1. v2 path: `await v2Client.v2.session.compact({ sessionID })`. The v2 client is built lazily once at load from `@opencode-ai/sdk/v2/client`.
-2. v1 fallback: on any v2 failure or resolved-error, `client.session.summarize({ path: { id: sessionID }, body: { providerID, modelID, auto: true } })`. The `providerID` and `modelID` come from the per-session model cache captured by `experimental.chat.system.transform` (`input.model.providerID`, `input.model.id`; the window is `input.model.limit.context`). If the cache has no model for the session, the tool returns `"Compaction failed: <detail>"` and does NOT call summarize. `auto: true` makes opencode's `experimental.compaction.autocontinue` hook fire, so a tool-triggered compaction still posts the configured continue message. The v2 `session.compact` endpoint is a server-side hard stub on opencode 1.18.11 (`ServiceUnavailableError` — "Session compact is not available yet"), so on that build the summarize fallback is the path that actually compacts. The old v1 command fallback is dropped: research proved it is dead (`UnknownError` on 1.18.11), so the tool no longer mirrors the `/compact` keybind.
-3. The tool never throws. It returns `"Compaction requested."` on success or `"Compaction failed: <detail>"` on failure, so the agent sees the outcome as the tool result.
-
-### Post-compaction message
-
-When `postCompactContinue` is on, the `experimental.compaction.autocontinue` hook (`src/index.ts:509`) runs after a successful compaction:
-
-- `output.enabled = false` suppresses opencode's synthetic "continue" message.
-- `client.session.promptAsync({ path: { id: input.sessionID }, body: { agent: input.agent, parts: [{ type: "text", text: opts.postCompactMsg }] } })` injects the configured text as a real, persisted user message. The call is fire-and-forget with a `.catch` log; a race here is tolerated by design.
-- When `postCompactContinue` is off, the hook still sets `output.enabled = false` (so opencode's synthetic continue is suppressed too) but sends no message at all.
-
-The injected message is REAL, unlike the transient warning injection. It is persisted to the session store, so the session loop processes it as the next user turn.
-
-## Critical design gotchas
-
-### The injection is transient — push on EVERY turn
-
-The synthetic message is pushed into the *current transform call's in-memory* message array. It is **never persisted to the session store**; the session loop re-reads messages from the store on each step. Therefore, if the plugin injected only on the first turn above threshold, the warning would appear in that step's assembled context but vanish on the next step (tool calls, follow-ups). **The warning must be pushed on every `messages.transform` call while above threshold.** `lastWarned` gates only the toast and verbose log, never the injection.
-
-### Config is read once at load
-
-`loadOptions()` runs when the plugin module loads; the file `~/.config/opencode/opencode-context-watch.json` is read a single time. **Changes require an opencode restart.**
-
-### Percent mode needs a known window
-
-- Live TUI: window is cached per session via `system.transform` automatically.
-- `opencode run` (headless/CI): no TUI, so no cache — pass `CONTEXT_WATCH_WINDOW` explicitly, or the percent band silently stays disabled (tokens band still applies).
-
-### The v2 client import must be the client-only subpath
-
-- Import the v2 client from `@opencode-ai/sdk/v2/client`, never the full `/v2` entry. The full entry imports cross-spawn and child_process and breaks `bun build` browser-mode.
-- `compact` lives on `v2Client.v2.session` (the `Session3` client), not on the top-level `v2Client.session` (the `Session2` client lacks it).
-- The v1 `command` and `promptAsync` methods live on the top-level `client.session.*`, not on `client.app.session.*` (`App` only has `log` and `agents`).
-- `PluginInput.serverUrl` is a `URL` object; pass `serverUrl?.href` as `baseUrl`.
+The appended message exists only in the current hook call's array — opencode
+never persists it, and the session loop re-reads messages from the store each
+step. So it is appended on **every** above-threshold request. Injecting only on
+the first one would show the warning in that step and lose it on the next
+(tool-calling follow-ups, multi-step loops).
 
 ## Configuration
 
-Config file (optional): `~/.config/opencode/opencode-context-watch.json`. Read once at load; restart to apply.
+`ctx.options` only, resolved once in `setup` by the pure
+`resolveOptions(raw)` in `src/config.ts`. There is no config file, no env
+override, and no watcher; a config change needs an opencode restart.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `warnPercent` | `0.77` | 0..1, or percent (e.g. `77`) if > 1. Warn when `tokens/window` crosses this. |
-| `warnTokens` | `150000` | Warn when the session reaches this many tokens (absolute). |
-| `windowTokens` | `null` | Override the model's context window (tokens). |
-| `rearmPercent` | `5` | Re-warn after this many percentage-point rise (percent band). |
-| `rearmTokens` | `5000` | Re-warn after this many more tokens (tokens band). |
-| `toast` | `true` | Show a TUI toast when a band is crossed. |
-| `verbose` | `false` | Log context estimates to the opencode log (`client.app.log`). |
+| `warnPercent` | `0.77` | 0..1, or percent (`77`) if > 1. Values > 1 are divided by 100. |
+| `warnTokens` | `150000` | Warn when the session reaches this many tokens. |
+| `windowTokens` | `null` | Override the model's context window. |
+| `rearmPercent` | `5` | Re-log after this many percentage-point rise. |
+| `rearmTokens` | `5000` | Re-log after this many more tokens. |
+| `verbose` | `false` | Log every context warning to the service log. |
 | `message` | default template | Injection template; placeholders `{percent}` `{tokens}` `{window}`. |
-| `postCompactContinue` | `false` | Send a message after compaction. |
-| `postCompactMsg` | `[context-watch] Session context was compacted. Continue your work from where you left off, keeping replies concise.` | Text of the post-compaction message. |
 
-### Environment overrides (win over file)
+A rejected value falls back to its own default and is written to the OpenCode
+service log with `console.error` as `[context-watch] <key>: <message>`; unknown
+keys and a non-object root are reported the same way. The plugin keeps running
+with the good keys. Headless `opencode2 run --print-logs` does not print plugin
+console output, so these lines are only visible in a service log or terminal
+run.
 
-`CONTEXT_WATCH_PERCENT`, `CONTEXT_WATCH_TOKENS`, `CONTEXT_WATCH_WINDOW`, `CONTEXT_WATCH_REARM`, `CONTEXT_WATCH_REARM_TOKENS`, `CONTEXT_WATCH_MESSAGE`, `CONTEXT_WATCH_NO_TOAST`, `CONTEXT_WATCH_POST_COMPACT_CONTINUE`, `CONTEXT_WATCH_POST_COMPACT_MSG`.
+## Error handling
 
-`warnPercent` normalization: values > 1 are divided by 100 (so `77` and `0.77` both mean 77%). `windowTokens` values <= 0 are treated as unknown (`null`). `CONTEXT_WATCH_POST_COMPACT_CONTINUE` accepts literal `true`, `false`, or a numeric string (non-zero means `true`); anything else pushes a problem and falls back to file/default.
+- A failed `ctx.model.list()` logs once and disables the percent band.
+- A `session.step.ended` with missing or malformed `data` is skipped; it must
+  never throw out of the drain loop, which would kill the only usage source.
+- A rejected `ctx.session.hook()` registration aborts the event stream before
+  setup rethrows, so a failed setup cannot orphan a live iterator.
+- The event loop is wrapped; it logs only on a non-abort failure and exits
+  quietly when the abort signal fires. It must never reject into the session.
+- The context hook body cannot throw: every input is validated (`usageTotal`
+  returns `undefined` without a sample, `assess` ignores a missing window).
 
 ## Verification
 
 ```sh
-# Typecheck
+bun test
 npx tsc --noEmit
-
-# Bundle check
+npx tsc -p tsconfig.test.json --noEmit
+bunx biome check .
 bun build src/index.ts --outdir dist
-
-# Smoke test — inject a warning on the first turn (expect the marker echoed)
-cd /tmp/opencode/ctxwatch-runtest && \
-  CONTEXT_WATCH_PERCENT=0.001 CONTEXT_WATCH_WINDOW=200000 \
-  CONTEXT_WATCH_MESSAGE="...CWVERIFIED..." \
-  opencode run --print-logs "Read hello.txt and tell me what it says"
 ```
 
-## Model window reference
-
-- `opencode/deepseek-v4-flash-free`: **200k** window (NOT 1M — that is `deepseek/deepseek-v4-flash`).
+`tests/plugin.test.ts` drives the real plugin against a fake V2 context (model
+list, event stream, context hook) and asserts the public behavior: what gets
+appended to `event.messages`, what gets logged, and what cleanup does. A
+two-turn live run should echo a unique marker from a `message` template with
+`warnPercent` set low enough to always fire.

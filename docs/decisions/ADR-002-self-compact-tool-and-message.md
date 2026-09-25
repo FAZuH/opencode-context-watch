@@ -1,7 +1,9 @@
 # ADR-002: Self-compact tool and post-compaction user message injection
 
 ## Status
-Accepted
+Superseded by [ADR-003](ADR-003-v2-only-rewrite.md) (2026-09-25). The `compact_context`
+tool and both `postCompact*` options are removed: OpenCode 2.0.16 exposes no
+compaction trigger on the plugin context, and V2 owns the post-compaction resume.
 
 ## Date
 2026-08-06

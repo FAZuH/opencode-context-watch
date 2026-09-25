@@ -1,76 +1,87 @@
 # opencode-context-watch
 
-Warn when a session's context window usage crosses a configurable threshold. An [opencode](https://opencode.ai) plugin that injects a warning into the conversation so the agent can wrap up the current step or prepare for compaction before the window is full.
+Warn when a session's context window usage crosses a configurable threshold. An
+[OpenCode](https://opencode.ai) **V2** plugin that injects a warning into the
+conversation, so the agent wraps up the current step or prepares for compaction
+before the window is full.
 
 ## Install
 
-Install locally for the current OpenCode project:
+Add the package to `opencode.json`; opencode hands its `options` object to the
+plugin:
 
-```bash
-opencode plugin opencode-context-watch
-```
-
-Install globally:
-
-```bash
-opencode plugin -g opencode-context-watch
-```
-
-OpenCode detects both package entrypoints and writes the plugin into the server and TUI config targets.
-
-## Configuration
-
-Config file (optional): `~/.config/opencode/opencode-context-watch.json`
-
-```json
+```jsonc
 {
-  "warnPercent": 0.75,
-  "warnTokens": 150000,
-  "rearmPercent": 2,
-  "postCompactContinue": true,
-  "postCompactMsg": "[context-watch] Session context was compacted. Continue your work from where you left off, keeping replies concise.",
-  "message": "[context-watch] Context window usage is at {percent}% ({tokens}/{window} tokens). The session is getting full: wrap up the current step soon, keep replies concise, avoid re-reading large files, and be ready to prepare for compaction if you continue."
+  "plugins": [
+    {
+      "package": "/path/to/opencode-context-watch",
+      "options": {
+        "warnPercent": 0.7
+      }
+    }
+  ]
 }
 ```
 
-### Options
+`package` takes the package name once it is published, or a path to a clone or
+symlink of this repository while you develop it. Restart opencode after editing
+`opencode.json`.
+
+## Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `warnPercent` | `0.77` | 0..1, or percent (e.g. 77) if > 1. Warn when usage reaches this fraction of the model window |
-| `warnTokens` | `150000` | Warn when session reaches this many tokens |
-| `rearmPercent` | `5` | Re-warn after this many percentage-point rise |
-| `rearmTokens` | `5000` | Re-warn after this many more tokens |
-| `toast` | `true` | Show a TUI toast when a band is crossed |
-| `verbose` | `false` | Log context estimates to the opencode log |
+| `warnPercent` | `0.77` | 0..1, or percent (e.g. `77`) if > 1. Warn when usage reaches this fraction of the model window |
+| `warnTokens` | `150000` | Warn when the session reaches this many tokens |
+| `windowTokens` | — | Override the model's context window |
+| `rearmPercent` | `5` | Log again after this many percentage-point rise |
+| `rearmTokens` | `5000` | Log again after this many more tokens |
+| `verbose` | `false` | Log every context warning to the service log |
 | `message` | — | Template; placeholders `{percent}` `{tokens}` `{window}` |
-| `postCompactContinue` | `false` | Send a message after compaction |
-| `postCompactMsg` | `[context-watch] Session context was compacted. Continue your work from where you left off, keeping replies concise.` | Text of the post-compaction message |
 
-### Env overrides
-
-`CONTEXT_WATCH_PERCENT`, `CONTEXT_WATCH_TOKENS`, `CONTEXT_WATCH_WINDOW`, `CONTEXT_WATCH_REARM`, `CONTEXT_WATCH_REARM_TOKENS`, `CONTEXT_WATCH_MESSAGE`, `CONTEXT_WATCH_NO_TOAST`, `CONTEXT_WATCH_POST_COMPACT_CONTINUE`, `CONTEXT_WATCH_POST_COMPACT_MSG`
-
-### Notes
-
-- The warning fires when **either** threshold is crossed (whichever comes first). Both thresholds can be active at once.
-- The percent threshold requires the model window to be known (cached by `system.transform` in the live TUI; pass `CONTEXT_WATCH_WINDOW` when using `opencode run`). When the window is unknown, only the tokens threshold applies; `{percent}`/`{window}` render `0`/`unknown`.
-
-### Configuration errors
-
-If the config file or an env override is invalid — bad JSON, wrong types, out-of-range values, or unknown keys — the plugin falls back to the default for each bad value and shows a TUI error toast listing exactly what is wrong. The full list is also written to the opencode log. The plugin keeps running with the defaults for the broken keys.
+A bad value falls back to its default; the other options still apply. The
+problem is written to the OpenCode service log with `console.error`, as
+`[context-watch] <key>: <what is wrong>`. Headless `opencode2 run
+--print-logs` does not print plugin console output, so you only see these lines
+in a service log or terminal run.
 
 ## How it works
 
-- `experimental.chat.messages.transform` reads the real context size from the most recent completed assistant message's provider-reported token counts (the same number opencode's TUI context meter shows), then — when the threshold is crossed — pushes a synthetic user message into `output.messages` so the warning is visible to the model as part of the conversation.
-- `experimental.chat.system.transform` caches the model's context window from `model.limit.context` because the messages transform does not receive model info.
-- The plugin registers a `compact_context` tool the agent can call to compact its own session when the window is full. When `postCompactContinue` is enabled, a successful compaction posts `postCompactMsg` as a real user message (suppressing opencode's synthetic continue) so the session resumes on the configured instruction. When it is off, no message is sent after compaction.
+- On load the plugin reads the model list and remembers each model's context
+  window.
+- It listens for `session.step.ended` and keeps the token usage of the last
+  completed step per session. That sample — `input + output + reasoning +
+  cache.read + cache.write` — is the same number opencode's context meter shows.
+  Cumulative `session.usage.updated` events are ignored on purpose.
+- On every model request above a threshold it appends a synthetic user message
+  to the request, so the model reads the warning as part of the conversation.
+  The message is never stored, so it is added on every above-threshold request,
+  not just the first.
+- `rearmPercent` and `rearmTokens` only limit how often the service log repeats.
+
+Notes:
+
+- Either threshold can fire first; both can be active at once.
+- The percent band needs a known window. Without one only the token band
+  applies, and `{percent}`/`{window}` render as `0`/`unknown`.
+- The first one or two model requests of a session cannot warn. OpenCode
+  publishes a step's token usage after the next request has already been
+  assembled, so on a cold start there is no sample yet. After that, every
+  above-threshold request is warned. That is fine for a "wrap up soon" hint,
+  and it is why the plugin does not ask OpenCode for the transcript on every
+  request.
+- Compaction is opencode's job. The plugin adds no tool of its own.
 
 ## Development
 
 ```sh
-./dev.sh format lint typecheck
-./dev.sh all
+bun install
+bun test
+npx tsc --noEmit
+npx tsc -p tsconfig.test.json --noEmit
+bunx biome format --write .
+bunx biome check --write .
+bun build src/index.ts --outdir dist
 ```
 
 ## License

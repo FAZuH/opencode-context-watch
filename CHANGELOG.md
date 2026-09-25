@@ -1,3 +1,16 @@
+## [Unreleased]
+
+### ⚠ BREAKING CHANGES
+
+* The plugin now targets OpenCode V2 only and no longer loads on OpenCode 1.x. It is a plain `{ id, setup }` default export with no `@opencode-ai/*` runtime dependency.
+* Configuration moved from `~/.config/opencode/opencode-context-watch.json` and the `CONTEXT_WATCH_*` environment variables to the `options` object of the `plugins: [{ package, options }]` config form in `opencode.json`. There is no config file, env override, or watcher to migrate.
+* Removed the `compact_context` tool and the `toast`, `postCompactContinue`, and `postCompactMsg` options. OpenCode 2 exposes no compaction trigger to plugins, so opencode's own automatic compaction is the compaction path. Config problems are written to the console log instead of a TUI toast.
+
+### New Features
+
+* The model context window is read from the OpenCode model list at startup, so the percent threshold works without a separate system hook.
+* Context usage comes from each session's `session.step.ended` token usage; the cumulative `session.usage.updated` figure is ignored.
+
 ## 0.1.3 (2026-08-07)
 
 ## 0.1.2 (2026-08-05)
