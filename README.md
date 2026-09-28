@@ -4,6 +4,10 @@
 
 **Warn an OpenCode agent before its context window fills, so it can wrap up or compact in time.**
 
+[![npm](https://img.shields.io/npm/v/opencode-context-watch)](https://www.npmjs.com/package/opencode-context-watch)
+[![Release](https://img.shields.io/github/v/release/FAZuH/opencode-context-watch)](https://github.com/FAZuH/opencode-context-watch/releases)
+[![License](https://img.shields.io/github/license/FAZuH/opencode-context-watch)](https://github.com/FAZuH/opencode-context-watch/blob/main/LICENSE)
+
 </div>
 
 <hr>
@@ -12,6 +16,11 @@
 ● <a href="#installation">Installation</a> ﻿ ● <a href="#usage">Usage</a> ﻿ ● <a href="#options">Options</a><br>
 ● <a href="#how-it-works">How it works</a> ﻿ ● <a href="#docs">Docs</a> ﻿ ● <a href="#license">License</a>
 </div>
+
+> [!warning]
+> This plugin targets **OpenCode 2.x only**. On OpenCode 1.x it is a silent no-op:
+> there is no V1 support and no fallback path. Verified against OpenCode 2.0.16 —
+> see [ADR-004](docs/decisions/ADR-004-v2-only-rewrite.md).
 
 ## Installation
 
@@ -33,7 +42,7 @@ plugin, so this one edit is the whole install:
 
 `package` takes the published package name, or a path to a clone or symlink of
 this repository while you develop it. Restart opencode after editing
-`opencode.json`.
+`opencode.json`. Nothing loads on OpenCode 1.x.
 
 ## Usage
 
