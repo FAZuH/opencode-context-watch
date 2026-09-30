@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Development helper script
 # Usage: ./dev.sh [command1] [command2] ...
 #   commands: format | lint | typecheck | test | bundle | all | help
