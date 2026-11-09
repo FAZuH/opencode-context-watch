@@ -64,6 +64,10 @@ hand-edit or delete it here; change it centrally and run
   `{ events: { emit(type, data) } }`. The report plugin calls it from its TUI
   as `ctx.client.rpc(contract).status(...)` and listens on the same client's
   `events.on`. Registration is optional; skip it when `ctx.rpc` is absent.
+- `ctx.session.get({ sessionID })` resolves the session record (wrapped as
+  `{ data }` by the service client); its `model` is `{ id, providerID,
+  variant }`. `session.step.ended` carries no model, so this is the fallback
+  window source for a status call answered by another project instance.
 - `ctx.tool.transform` custom tools take object definitions and return
   `{ content }`, but this plugin needs no tool.
 

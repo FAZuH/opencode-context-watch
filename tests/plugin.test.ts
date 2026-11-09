@@ -34,6 +34,7 @@ interface Fix {
 	modelListFails?: boolean;
 	hookFails?: boolean;
 	rpc?: boolean;
+	sessionModel?: { id: string; providerID: string };
 }
 
 interface StatusResult {
@@ -98,6 +99,7 @@ function fakeContext(fix: Fix = {}) {
 					},
 				};
 			},
+			get: async () => ({ data: { model: fix.sessionModel } }),
 		},
 		event: {
 			subscribe: async (options) => {
@@ -488,6 +490,19 @@ describe("status RPC", () => {
 				compacting: false,
 			},
 		});
+	});
+
+	test("resolves the window from the session when no hook has run", async () => {
+		const fake = await start({
+			options: OPTIONS,
+			models: MODELS,
+			rpc: true,
+			sessionModel: { id: "big", providerID: "acme" },
+		});
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		const result = await fake.status("s1");
+		expect(result.status?.window).toBe(100_000);
+		expect(result.status?.percent).toBe(90);
 	});
 
 	test("emits changed with the new status after a step", async () => {

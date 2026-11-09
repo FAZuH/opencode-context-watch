@@ -101,8 +101,10 @@ log or a terminal run.
 - It registers a read-only `context-watch` RPC when the host has
   `ctx.rpc.register`: `status({ sessionID })` returns the sample, the model
   window, the active bands, and the compacting flag, and `changed` fires on
-  every completed step and compaction transition. The report plugin's sidebar
-  reads it; hosts without RPC registration keep the warning path unchanged.
+  every completed step and compaction transition. The window comes from the
+  session's model record when the instance answering never ran the context
+  hook. The report plugin's sidebar reads it; hosts without RPC registration
+  keep the warning path unchanged.
 - `rearmPercent` and `rearmTokens` only limit how often the service log repeats
   the warning, never the warning itself.
 

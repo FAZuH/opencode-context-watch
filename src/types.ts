@@ -58,6 +58,7 @@ export interface PluginContext {
 			name: "context",
 			callback: (event: ContextEvent) => void | Promise<void>,
 		): Promise<Registration>;
+		get?(input: { sessionID: string }): Promise<unknown>;
 	};
 	event: {
 		subscribe(options: {

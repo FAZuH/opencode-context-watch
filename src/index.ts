@@ -21,6 +21,11 @@ const PREFIX = "[context-watch]";
 const windowKey = (providerID: string, modelID: string) =>
 	`${providerID}/${modelID}`;
 
+interface SessionInfoResult {
+	data?: { model?: { id?: unknown; providerID?: unknown } };
+	model?: { id?: unknown; providerID?: unknown };
+}
+
 const sessionIDOf = (data: unknown): string | undefined => {
 	if (!data || typeof data !== "object") return undefined;
 	const id = (data as { sessionID?: unknown }).sessionID;
@@ -62,14 +67,48 @@ export default {
 		const lastWindow = new Map<string, number>();
 		const compacting = new Set<string>();
 
-		const statusOf = (sessionID: string) =>
-			contextStatus(
+		const statusOf = async (sessionID: string) => {
+			const window = await windowOf(sessionID);
+			return contextStatus(
 				sessionID,
 				usage.get(sessionID),
-				lastWindow.get(sessionID),
+				window,
 				options,
 				compacting.has(sessionID),
 			);
+		};
+
+		/**
+		 * The model window for a session. The hook is the cheap source, but a
+		 * service can answer the RPC from another project instance, so fall
+		 * back to the session's own model record.
+		 */
+		const windowOf = async (sessionID: string) => {
+			const remembered = lastWindow.get(sessionID);
+			if (remembered !== undefined) return remembered;
+			if (
+				typeof options.windowTokens === "number" &&
+				options.windowTokens > 0
+			) {
+				return options.windowTokens;
+			}
+			if (typeof ctx.session.get !== "function") return undefined;
+			try {
+				const result = (await ctx.session.get({ sessionID })) as
+					| SessionInfoResult
+					| undefined;
+				const session = result?.data ?? result;
+				const model = session?.model;
+				if (
+					typeof model?.providerID !== "string" ||
+					typeof model?.id !== "string"
+				)
+					return undefined;
+				return windows.get(windowKey(model.providerID, model.id));
+			} catch {
+				return undefined;
+			}
+		};
 
 		let rpc: RpcRegistration | undefined;
 		if (typeof ctx.rpc?.register === "function") {
@@ -80,7 +119,7 @@ export default {
 							(input as { sessionID?: unknown } | undefined)?.sessionID ?? "",
 						);
 						if (!sessionID) return { ok: false };
-						return { ok: true, status: statusOf(sessionID) };
+						return { ok: true, status: await statusOf(sessionID) };
 					},
 				});
 			} catch (err) {
@@ -94,7 +133,7 @@ export default {
 			try {
 				await rpc.events.emit("changed", {
 					sessionID,
-					status: statusOf(sessionID),
+					status: await statusOf(sessionID),
 				});
 			} catch (err) {
 				console.error(`${PREFIX} status event failed:`, err);

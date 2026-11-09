@@ -124,8 +124,10 @@ sessionID })` returns `{ ok, status }`, where `status` carries the sample
 `changed` fires with the same status after every completed step, when
 compaction starts, and when it ends or fails. The model window is remembered
 from the first `context` hook of the session, because `session.step.ended`
-does not name a model. Registration failure is logged and ignored: the warning
-path must work on a host with no RPC.
+does not name a model. When no hook has run in the instance answering the
+call, `status` falls back to the session's own model record from
+`ctx.session.get({ sessionID })`. Registration failure is logged and ignored:
+the warning path must work on a host with no RPC.
 
 The report plugin's TUI sidebar consumes this contract. It keeps its own copy
 of the schema, subscribes to `changed`, and asks for `status` on session
