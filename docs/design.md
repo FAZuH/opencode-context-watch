@@ -130,8 +130,9 @@ call, `status` falls back to the session's own model record from
 the warning path must work on a host with no RPC.
 
 The report plugin's TUI sidebar consumes this contract. It keeps its own copy
-of the schema, subscribes to `changed`, and asks for `status` on session
-switch; a missing plugin or method leaves its Context section hidden.
+of the schema, subscribes to `changed`, asks for `status` on session switch,
+and polls the same call every 5 seconds as a fallback for a missed event; a
+missing plugin or method leaves its Context Watch section hidden.
 
 ## Configuration
 
