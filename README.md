@@ -62,17 +62,18 @@ restart opencode.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `warnPercent` | `0.77` | 0..1, or percent (e.g. `77`) if > 1. Warn when usage reaches this fraction of the model window |
-| `warnTokens` | `150000` | Warn when the session reaches this many tokens |
+| `warnPercent` | `0.77` | 0..1, or percent (e.g. `77`) if > 1. Warn when usage reaches this fraction of the model window. `null` disables this band |
+| `warnTokens` | `150000` | Warn when the session reaches this many tokens. `null` disables this band |
 | `windowTokens` | — | Override the model's context window |
 | `rearmPercent` | `5` | Log again after this many percentage-point rise |
 | `rearmTokens` | `5000` | Log again after this many more tokens |
 | `verbose` | `false` | Log every context warning to the service log |
-| `message` | — | Template with the placeholders `{percent}`, `{tokens}`, `{window}` |
+| `message` | — | Template with the placeholders `{usage}`, `{percent}`, `{tokens}`, `{window}` |
 
-Either band can fire first, and both can be active at once. The percent band
-needs a known window; without one only the token band applies and `{percent}` /
-`{window}` render as `0` / `unknown`.
+Either band can fire first, and either can be disabled with `null`. The percent
+band needs a known window; without one only the token band applies and `{usage}`
+renders the token count alone. `{percent}` and `{window}` still render as `0` and
+`unknown` when the window is unavailable.
 
 A bad value falls back to its default and the other options still apply. The
 problem is written to the OpenCode service log as
@@ -91,6 +92,12 @@ log or a terminal run.
 - On every model request over a threshold it appends a synthetic user message to
   that request. The message is never stored, which is why it is added on every
   above-threshold request rather than only the first.
+- It listens for `session.compaction.started`, `session.compaction.ended`, and
+  `session.compaction.failed`. Warnings are suppressed while compaction runs,
+  and the pre-compaction sample and rearm state are dropped when it ends or
+  fails, so the first post-compaction request waits for a fresh sample.
+- It drops the per-session sample, rearm state, and compacting mark on
+  `session.deleted`.
 - `rearmPercent` and `rearmTokens` only limit how often the service log repeats
   the warning, never the warning itself.
 
@@ -99,9 +106,10 @@ Two limits worth knowing:
 - The first one or two model requests of a session cannot warn. OpenCode
   publishes a step's token usage after the next request has already been
   assembled, so a cold start has no sample yet. After that every
-  above-threshold request is warned. That is fine for a "wrap up soon" hint, and
-  it is why the plugin does not ask OpenCode to re-serialize the transcript on
-  every request.
+  above-threshold request is warned. The first request after a compaction also
+  cannot warn, because the pre-compaction sample is dropped. That is fine for a
+  "wrap up soon" hint, and it is why the plugin does not ask OpenCode to
+  re-serialize the transcript on every request.
 - Compaction is opencode's job. The plugin adds no tool of its own.
 
 ## Docs

@@ -3,6 +3,7 @@ import {
 	type LastWarned,
 	assess,
 	renderMessage,
+	usagePhrase,
 	usageTotal,
 	warningMessage,
 } from "./context";
@@ -12,6 +13,12 @@ const PREFIX = "[context-watch]";
 
 const windowKey = (providerID: string, modelID: string) =>
 	`${providerID}/${modelID}`;
+
+const sessionIDOf = (data: unknown): string | undefined => {
+	if (!data || typeof data !== "object") return undefined;
+	const id = (data as { sessionID?: unknown }).sessionID;
+	return typeof id === "string" && id ? id : undefined;
+};
 
 export default {
 	id: "opencode-context-watch",
@@ -45,12 +52,39 @@ export default {
 		// request by one step; the first requests of a session have no sample.
 		const usage = new Map<string, StepTokens>();
 		const lastWarned = new Map<string, LastWarned>();
+		const compacting = new Set<string>();
 		const cancel = new AbortController();
 		void (async () => {
 			try {
 				for await (const event of await ctx.event.subscribe({
 					signal: cancel.signal,
 				})) {
+					const sessionID = sessionIDOf(event.data);
+					if (event.type === "session.compaction.started") {
+						if (sessionID) compacting.add(sessionID);
+						continue;
+					}
+					if (
+						event.type === "session.compaction.ended" ||
+						event.type === "session.compaction.failed"
+					) {
+						// The pre-compaction sample describes a context that no longer
+						// exists. Drop it and wait for the next completed step.
+						if (sessionID) {
+							compacting.delete(sessionID);
+							usage.delete(sessionID);
+							lastWarned.delete(sessionID);
+						}
+						continue;
+					}
+					if (event.type === "session.deleted") {
+						if (sessionID) {
+							usage.delete(sessionID);
+							lastWarned.delete(sessionID);
+							compacting.delete(sessionID);
+						}
+						continue;
+					}
 					if (event.type !== "session.step.ended") continue;
 					// A malformed payload must not throw out of the loop: that would
 					// kill the only usage source for the rest of the session.
@@ -67,6 +101,7 @@ export default {
 
 		const registration = await ctx.session
 			.hook("context", (event) => {
+				if (compacting.has(event.sessionID)) return;
 				const tokens = usageTotal(usage.get(event.sessionID));
 				if (tokens === undefined) return;
 				const window =
@@ -83,7 +118,7 @@ export default {
 					lastWarned.set(event.sessionID, result.next);
 					if (options.verbose) {
 						console.log(
-							`${PREFIX} ${event.sessionID} at ${Math.round(result.pct ?? 0)}% (${tokens}/${window ?? "unknown"} tokens)`,
+							`${PREFIX} ${event.sessionID} at ${usagePhrase(result.pct, tokens, window)}`,
 						);
 					}
 				}

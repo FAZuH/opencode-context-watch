@@ -19,6 +19,11 @@ const stepEnded = (sessionID: string, tokens: StepTokens): PluginEvent => ({
 	data: { sessionID, tokens },
 });
 
+const sessionEvent = (type: string, sessionID: string): PluginEvent => ({
+	type,
+	data: { sessionID },
+});
+
 /** A macrotask boundary: the plugin's event loop does no I/O per event, so
  * everything it was handed has been processed once this resolves. */
 const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -126,7 +131,7 @@ describe("plugin setup", () => {
 		});
 		await fake.emit(stepEnded("s1", { input: 90_000, output: 0 }));
 		const messages = await fake.request({ sessionID: "s1" });
-		expect(injectedText(messages)).toContain("90%");
+		expect(injectedText(messages)).toContain("90% (90,000/100,000 tokens)");
 	});
 
 	test("does not warn before any step has completed", async () => {
@@ -209,6 +214,71 @@ describe("plugin setup", () => {
 		expect(await fake.request({ sessionID: "s2" })).toEqual([]);
 	});
 
+	test("a compaction suppresses the warning and clears the old sample", async () => {
+		const fake = await start({
+			options: { warnPercent: 0.8, warnTokens: 10_000_000 },
+			models: MODELS,
+		});
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+
+		await fake.emit(sessionEvent("session.compaction.started", "s1"));
+		expect(await fake.request({ sessionID: "s1" })).toEqual([]);
+
+		await fake.emit(sessionEvent("session.compaction.ended", "s1"));
+		expect(await fake.request({ sessionID: "s1" })).toEqual([]);
+
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+	});
+
+	test("a failed compaction also clears the old sample", async () => {
+		const fake = await start({
+			options: { warnPercent: 0.8, warnTokens: 10_000_000 },
+			models: MODELS,
+		});
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+		await fake.emit(sessionEvent("session.compaction.failed", "s1"));
+		expect(await fake.request({ sessionID: "s1" })).toEqual([]);
+	});
+
+	test("session deletion drops the usage sample and the compacting mark", async () => {
+		const fake = await start({
+			options: { warnPercent: 0.8, warnTokens: 10_000_000 },
+			models: MODELS,
+		});
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		await fake.emit(sessionEvent("session.compaction.started", "s1"));
+		await fake.emit(sessionEvent("session.deleted", "s1"));
+
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+	});
+
+	test("a null warnPercent leaves only the token band", async () => {
+		const fake = await start({
+			options: { warnPercent: null, warnTokens: 1_000 },
+			models: MODELS,
+		});
+		await fake.emit(stepEnded("s1", { input: 2_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+		await fake.emit(stepEnded("s1", { input: 500 }));
+		expect(await fake.request({ sessionID: "s1" })).toEqual([]);
+	});
+
+	test("the default message renders tokens alone without a window", async () => {
+		const fake = await start({
+			options: { warnPercent: null, warnTokens: 1_000 },
+			models: [],
+		});
+		await fake.emit(stepEnded("s1", { input: 2_000 }));
+		const text = injectedText(await fake.request({ sessionID: "s1" }));
+		expect(text).toContain("2,000 tokens");
+		expect(text).not.toContain("unknown");
+		expect(text).not.toContain("0%");
+	});
+
 	test("warns on every above-threshold request but logs only on a rearm rise", async () => {
 		const log = spyOn(console, "log").mockImplementation(() => {});
 		try {
@@ -273,7 +343,7 @@ describe("plugin setup", () => {
 			});
 			expect(error.mock.calls.map((call) => String(call[0]))).toEqual([
 				'[context-watch] bogus: unknown option "bogus" (ignored)',
-				'[context-watch] warnPercent: must be a number greater than 0 and at most 100 (got "nope")',
+				'[context-watch] warnPercent: must be a number greater than 0 and at most 100 or null (got "nope")',
 			]);
 			await fake.emit(stepEnded("s1", { input: 1_500 }));
 			expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);

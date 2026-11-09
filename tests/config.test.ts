@@ -39,6 +39,26 @@ describe("resolveOptions", () => {
 		);
 	});
 
+	test("null disables a band and keeps the other one", () => {
+		const percentOff = resolveOptions({ warnPercent: null });
+		expect(percentOff.problems).toEqual([]);
+		expect(percentOff.options.warnPercent).toBeNull();
+		expect(percentOff.options.warnTokens).toBe(DEFAULTS.warnTokens);
+
+		const tokensOff = resolveOptions({ warnTokens: null });
+		expect(tokensOff.problems).toEqual([]);
+		expect(tokensOff.options.warnTokens).toBeNull();
+		expect(tokensOff.options.warnPercent).toBe(DEFAULTS.warnPercent);
+
+		const bothOff = resolveOptions({
+			warnPercent: null,
+			warnTokens: null,
+		});
+		expect(bothOff.problems).toEqual([]);
+		expect(bothOff.options.warnPercent).toBeNull();
+		expect(bothOff.options.warnTokens).toBeNull();
+	});
+
 	test("a bad value falls back per key and reports only that key", () => {
 		const { options, problems } = resolveOptions({
 			warnPercent: 0.5,

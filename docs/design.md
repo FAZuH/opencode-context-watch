@@ -16,6 +16,8 @@ decision and the supersession of ADR-001, ADR-002, and ADR-003.
 | `ctx.session.hook("context", cb)` | resolves `{ dispose() }`; event has `sessionID`, `model: { id, providerID, variant }`, `messages` | the per-request warning |
 | `event.messages` | mutable array; appending `{ role: "user", content: [{ type: "text", text }] }` is accepted | carrying the warning to the model |
 | `ctx.event.subscribe({ signal })` | async iterable of `{ type, data }`; `session.step.ended` data has `sessionID` and `tokens` | the usage cache |
+| `session.compaction.started/ended/failed` | event stream entries carrying `data.sessionID` | suppress warnings and reset the pre-compaction sample |
+| `session.deleted` | event stream entry carrying `data.sessionID` | prune per-session state |
 | `ctx.session.compact` | **absent** | — |
 
 `session.usage.updated` also arrives on that stream. It is cumulative
@@ -86,8 +88,9 @@ line is only visible in a real service log.
 
 - **Percent band** — `usage / window >= warnPercent`. Needs a known window
   (`windowTokens`, else the setup-time model list, keyed `providerID/modelID`).
-  Unknown window disables this band.
+  Unknown window disables this band. `warnPercent: null` disables it explicitly.
 - **Tokens band** — `usage >= warnTokens`. Absolute, window-independent.
+  `warnTokens: null` disables it explicitly.
 
 ## Rearm band and the transient injection
 
@@ -101,6 +104,16 @@ step. So it is appended on **every** above-threshold request. Injecting only on
 the first one would show the warning in that step and lose it on the next
 (tool-calling follow-ups, multi-step loops).
 
+## Compaction and session state
+
+`session.compaction.started` marks the session as compacting. The context hook
+returns without injecting until `session.compaction.ended` or
+`session.compaction.failed` clears the mark. Both end events also drop the
+session's `usage` and `lastWarned` entries: the pre-compaction sample describes a
+context that no longer exists, so the first post-compaction request waits for a
+fresh `session.step.ended`. `session.deleted` drops the same entries plus the
+compacting mark.
+
 ## Configuration
 
 `ctx.options` only, resolved once in `setup` by the pure
@@ -109,13 +122,13 @@ override, and no watcher; a config change needs an opencode restart.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `warnPercent` | `0.77` | 0..1, or percent (`77`) if > 1. Values > 1 are divided by 100. |
-| `warnTokens` | `150000` | Warn when the session reaches this many tokens. |
+| `warnPercent` | `0.77` | 0..1, or percent (`77`) if > 1. Values > 1 are divided by 100. `null` disables the band. |
+| `warnTokens` | `150000` | Warn when the session reaches this many tokens. `null` disables the band. |
 | `windowTokens` | `null` | Override the model's context window. |
 | `rearmPercent` | `5` | Re-log after this many percentage-point rise. |
 | `rearmTokens` | `5000` | Re-log after this many more tokens. |
 | `verbose` | `false` | Log every context warning to the service log. |
-| `message` | default template | Injection template; placeholders `{percent}` `{tokens}` `{window}`. |
+| `message` | default template | Injection template; placeholders `{usage}` `{percent}` `{tokens}` `{window}`. |
 
 A rejected value falls back to its own default and is written to the OpenCode
 service log with `console.error` as `[context-watch] <key>: <message>`; unknown

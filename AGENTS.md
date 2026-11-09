@@ -79,6 +79,10 @@ hand-edit or delete it here; change it centrally and run
   already run, so the first one or two requests of a session have no sample and
   cannot warn. Do not "fix" this with a per-hook `ctx.session.context` call — it
   re-serializes the whole transcript on every request.
+- `session.compaction.started` suppresses the warning. `ended` and `failed` drop
+  the session's `usage` and `lastWarned` entries, so a pre-compaction sample
+  cannot leak into the first post-compaction request. `session.deleted` prunes
+  the same state plus the compacting mark.
 - `ctx.session.get({ sessionID }).tokens` is the CUMULATIVE session total (it
   equals `session.usage.updated`), not the per-step context size. It is not a
   usable sample.
@@ -87,6 +91,7 @@ hand-edit or delete it here; change it centrally and run
 - Config comes only from `ctx.options`, resolved once at setup. There is no
   config file, no env parsing, and no watcher. Invalid values fall back per key;
   each problem is `console.error`-logged and the good keys still apply.
+- `warnPercent` and `warnTokens` accept `null` to disable a band.
 - Options are read at `setup`, so a config change needs an opencode restart.
 - The model-window map is built once at setup from `ctx.model.list().data`. A
   failed list is tolerated: the percent band is disabled and the tokens band

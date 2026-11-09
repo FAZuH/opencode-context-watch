@@ -7,8 +7,8 @@
  */
 
 export interface ContextWatchOptions {
-	warnPercent?: number;
-	warnTokens?: number;
+	warnPercent?: number | null;
+	warnTokens?: number | null;
 	windowTokens?: number | null;
 	rearmPercent?: number;
 	rearmTokens?: number;
@@ -29,7 +29,7 @@ export const DEFAULTS: Required<ContextWatchOptions> = {
 	rearmTokens: 5_000,
 	verbose: false,
 	message:
-		"[context-watch] Context window usage is at {percent}% ({tokens}/{window} tokens). The session is getting full: wrap up the current step soon, keep replies concise, avoid re-reading large files, and be ready to prepare for compaction if you continue.",
+		"[context-watch] Context window usage is at {usage}. The session is getting full: wrap up the current step soon, keep replies concise, avoid re-reading large files, and be ready to prepare for compaction if you continue.",
 };
 
 const CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
@@ -78,12 +78,29 @@ export function resolveOptions(raw: unknown): {
 		return DEFAULTS[key] as number;
 	};
 
-	const warnPercent = num(
+	const numOrNull = (
+		key: "warnPercent" | "warnTokens",
+		expected: string,
+		test: (n: number) => boolean,
+	): number | null => {
+		const value = conf[key];
+		if (value === undefined) return DEFAULTS[key] as number;
+		if (value === null) return null;
+		const n = toNumber(value);
+		if (Number.isFinite(n) && test(n)) return n;
+		problems.push({
+			key,
+			message: `must be ${expected} or null (got ${JSON.stringify(value)})`,
+		});
+		return DEFAULTS[key] as number;
+	};
+
+	const warnPercent = numOrNull(
 		"warnPercent",
 		"a number greater than 0 and at most 100",
 		(n) => n > 0 && n <= 100,
 	);
-	const warnTokens = num("warnTokens", "a positive number", (n) => n > 0);
+	const warnTokens = numOrNull("warnTokens", "a positive number", (n) => n > 0);
 	const rearmPercent = num("rearmPercent", "a positive number", (n) => n > 0);
 	const rearmTokens = num("rearmTokens", "a positive number", (n) => n > 0);
 
@@ -128,7 +145,12 @@ export function resolveOptions(raw: unknown): {
 
 	return {
 		options: {
-			warnPercent: warnPercent > 1 ? warnPercent / 100 : warnPercent,
+			warnPercent:
+				warnPercent === null
+					? null
+					: warnPercent > 1
+						? warnPercent / 100
+						: warnPercent,
 			warnTokens,
 			windowTokens,
 			rearmPercent,

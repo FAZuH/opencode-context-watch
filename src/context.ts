@@ -14,8 +14,8 @@ import type { ContextMessage, StepTokens } from "./types";
  * config; `warnPercent` is the normalized fraction (0.77, not 77).
  */
 export interface AssessOptions {
-	warnPercent: number;
-	warnTokens: number;
+	warnPercent: number | null;
+	warnTokens: number | null;
 	rearmPercent: number;
 	rearmTokens: number;
 }
@@ -69,9 +69,11 @@ export function assess(
 	last: LastWarned | undefined,
 ): Assessment {
 	const pct = window && window > 0 ? (tokens / window) * 100 : undefined;
-	const thresholdPct = opts.warnPercent * 100;
-	const overPercent = pct !== undefined && pct >= thresholdPct;
-	const overTokens = tokens >= opts.warnTokens;
+	const thresholdPct =
+		opts.warnPercent === null ? undefined : opts.warnPercent * 100;
+	const overPercent =
+		thresholdPct !== undefined && pct !== undefined && pct >= thresholdPct;
+	const overTokens = opts.warnTokens !== null && tokens >= opts.warnTokens;
 
 	const pctReArmed =
 		overPercent &&
@@ -94,9 +96,21 @@ export function assess(
 	};
 }
 
+/** The size phrase both `{usage}` and the verbose log print. */
+export function usagePhrase(
+	pct: number | undefined,
+	tokens: number,
+	window: number | undefined,
+): string {
+	return pct !== undefined && window !== undefined && window > 0
+		? `${Math.round(pct)}% (${tokens.toLocaleString()}/${window.toLocaleString()} tokens)`
+		: `${tokens.toLocaleString()} tokens`;
+}
+
 /**
- * Render the warning template, substituting the `{percent}`, `{tokens}` and
- * `{window}` placeholders.
+ * Render the warning template, substituting `{usage}`, `{percent}`, `{tokens}`
+ * and `{window}`. `{usage}` carries the whole size phrase: percent plus both
+ * counts when the window is known, tokens alone when it is not.
  */
 export function renderMessage(
 	template: string,
@@ -105,6 +119,7 @@ export function renderMessage(
 	window: number | undefined,
 ): string {
 	return template
+		.replaceAll("{usage}", usagePhrase(pct, tokens, window))
 		.replaceAll("{percent}", String(Math.round(pct ?? 0)))
 		.replaceAll("{tokens}", tokens.toLocaleString())
 		.replaceAll("{window}", window?.toLocaleString() ?? "unknown");
