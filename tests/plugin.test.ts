@@ -33,6 +33,26 @@ interface Fix {
 	models?: ModelInfo[];
 	modelListFails?: boolean;
 	hookFails?: boolean;
+	rpc?: boolean;
+}
+
+interface StatusResult {
+	ok: boolean;
+	status?: {
+		sessionID?: string;
+		tokens?: number;
+		window?: number;
+		percent?: number;
+		warnPercent?: number | null;
+		warnTokens?: number | null;
+		over?: boolean;
+		compacting?: boolean;
+	};
+}
+
+interface ChangedEvent {
+	sessionID: string;
+	status: { tokens?: number };
 }
 
 function fakeContext(fix: Fix = {}) {
@@ -41,6 +61,8 @@ function fakeContext(fix: Fix = {}) {
 	let signal: AbortSignal | undefined;
 	let hooks: ((event: ContextEvent) => void)[] = [];
 	let disposals = 0;
+	let statusHandler: ((input: unknown) => Promise<unknown>) | undefined;
+	const emits: { type: string; data: ChangedEvent }[] = [];
 
 	const ctx: PluginContext = {
 		options: fix.options,
@@ -50,6 +72,22 @@ function fakeContext(fix: Fix = {}) {
 				return { data: fix.models ?? [] };
 			},
 		},
+		...(fix.rpc
+			? {
+					rpc: {
+						register: async (_contract, handlers) => {
+							statusHandler = handlers.status;
+							return {
+								events: {
+									emit: async (type: string, data: unknown) => {
+										emits.push({ type, data: data as ChangedEvent });
+									},
+								},
+							};
+						},
+					},
+				}
+			: {}),
 		session: {
 			hook: async (_name, callback) => {
 				if (fix.hookFails) throw new Error("hook boom");
@@ -104,6 +142,11 @@ function fakeContext(fix: Fix = {}) {
 		ctx,
 		emit,
 		request,
+		status: async (sessionID: string): Promise<StatusResult> => {
+			if (!statusHandler) throw new Error("no status handler registered");
+			return (await statusHandler({ sessionID })) as StatusResult;
+		},
+		emits: () => emits,
 		disposals: () => disposals,
 		aborted: () => signal?.aborted === true,
 	};
@@ -405,5 +448,84 @@ describe("plugin setup", () => {
 		await fake.dispose();
 		expect(fake.aborted()).toBe(true);
 		expect(fake.disposals()).toBe(1);
+	});
+});
+
+describe("status RPC", () => {
+	const OPTIONS = {
+		warnPercent: 0.8,
+		warnTokens: 10_000_000,
+	};
+
+	test("answers before any sample with the bands and no usage", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		expect(await fake.status("s1")).toEqual({
+			ok: true,
+			status: {
+				sessionID: "s1",
+				warnPercent: 0.8,
+				warnTokens: 10_000_000,
+				over: false,
+				compacting: false,
+			},
+		});
+	});
+
+	test("reports tokens, window, and percent after a step", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		await fake.request({ sessionID: "s1" }); // records the model window
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.status("s1")).toEqual({
+			ok: true,
+			status: {
+				sessionID: "s1",
+				tokens: 90_000,
+				window: 100_000,
+				percent: 90,
+				warnPercent: 0.8,
+				warnTokens: 10_000_000,
+				over: true,
+				compacting: false,
+			},
+		});
+	});
+
+	test("emits changed with the new status after a step", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		await fake.request({ sessionID: "s1" });
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(fake.emits()).toHaveLength(1);
+		expect(fake.emits()[0]?.type).toBe("changed");
+		expect(fake.emits()[0]?.data.status.tokens).toBe(90_000);
+	});
+
+	test("compaction marks the status and clears the sample at the end", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		await fake.request({ sessionID: "s1" });
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		await fake.emit(sessionEvent("session.compaction.started", "s1"));
+		const during = await fake.status("s1");
+		expect(during.status?.compacting).toBe(true);
+		expect(during.status?.over).toBe(false);
+
+		await fake.emit(sessionEvent("session.compaction.ended", "s1"));
+		const after = await fake.status("s1");
+		expect(after.status?.compacting).toBe(false);
+		expect(after.status?.tokens).toBeUndefined();
+	});
+
+	test("session deletion clears the status", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		await fake.request({ sessionID: "s1" });
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		await fake.emit(sessionEvent("session.deleted", "s1"));
+		const status = await fake.status("s1");
+		expect(status.status?.tokens).toBeUndefined();
+		expect(status.status?.window).toBeUndefined();
+	});
+
+	test("a missing session id is not a status", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		expect(await fake.status("")).toEqual({ ok: false });
 	});
 });

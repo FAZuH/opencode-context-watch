@@ -7,7 +7,14 @@ import {
 	usageTotal,
 	warningMessage,
 } from "./context";
-import type { PluginContext, StepEndedData, StepTokens } from "./types";
+import { Contract } from "./rpc";
+import { contextStatus } from "./status";
+import type {
+	PluginContext,
+	RpcRegistration,
+	StepEndedData,
+	StepTokens,
+} from "./types";
 
 const PREFIX = "[context-watch]";
 
@@ -52,7 +59,48 @@ export default {
 		// request by one step; the first requests of a session have no sample.
 		const usage = new Map<string, StepTokens>();
 		const lastWarned = new Map<string, LastWarned>();
+		const lastWindow = new Map<string, number>();
 		const compacting = new Set<string>();
+
+		const statusOf = (sessionID: string) =>
+			contextStatus(
+				sessionID,
+				usage.get(sessionID),
+				lastWindow.get(sessionID),
+				options,
+				compacting.has(sessionID),
+			);
+
+		let rpc: RpcRegistration | undefined;
+		if (typeof ctx.rpc?.register === "function") {
+			try {
+				rpc = await ctx.rpc.register(Contract, {
+					status: async (input: unknown) => {
+						const sessionID = String(
+							(input as { sessionID?: unknown } | undefined)?.sessionID ?? "",
+						);
+						if (!sessionID) return { ok: false };
+						return { ok: true, status: statusOf(sessionID) };
+					},
+				});
+			} catch (err) {
+				// The sidebar is a read-only view; losing it must not stop warnings.
+				console.error(`${PREFIX} RPC registration failed:`, err);
+			}
+		}
+
+		const publish = async (sessionID: string) => {
+			if (!rpc) return;
+			try {
+				await rpc.events.emit("changed", {
+					sessionID,
+					status: statusOf(sessionID),
+				});
+			} catch (err) {
+				console.error(`${PREFIX} status event failed:`, err);
+			}
+		};
+
 		const cancel = new AbortController();
 		void (async () => {
 			try {
@@ -61,7 +109,10 @@ export default {
 				})) {
 					const sessionID = sessionIDOf(event.data);
 					if (event.type === "session.compaction.started") {
-						if (sessionID) compacting.add(sessionID);
+						if (sessionID) {
+							compacting.add(sessionID);
+							await publish(sessionID);
+						}
 						continue;
 					}
 					if (
@@ -74,6 +125,7 @@ export default {
 							compacting.delete(sessionID);
 							usage.delete(sessionID);
 							lastWarned.delete(sessionID);
+							await publish(sessionID);
 						}
 						continue;
 					}
@@ -81,6 +133,7 @@ export default {
 						if (sessionID) {
 							usage.delete(sessionID);
 							lastWarned.delete(sessionID);
+							lastWindow.delete(sessionID);
 							compacting.delete(sessionID);
 						}
 						continue;
@@ -92,6 +145,7 @@ export default {
 					if (!step || typeof step.sessionID !== "string" || !step.tokens)
 						continue;
 					usage.set(step.sessionID, step.tokens);
+					await publish(step.sessionID);
 				}
 			} catch (err) {
 				if (!cancel.signal.aborted)
@@ -102,11 +156,14 @@ export default {
 		const registration = await ctx.session
 			.hook("context", (event) => {
 				if (compacting.has(event.sessionID)) return;
-				const tokens = usageTotal(usage.get(event.sessionID));
-				if (tokens === undefined) return;
 				const window =
 					options.windowTokens ??
 					windows.get(windowKey(event.model.providerID, event.model.id));
+				if (window !== undefined && window > 0) {
+					lastWindow.set(event.sessionID, window);
+				}
+				const tokens = usageTotal(usage.get(event.sessionID));
+				if (tokens === undefined) return;
 				const result = assess(
 					options,
 					tokens,

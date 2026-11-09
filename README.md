@@ -98,6 +98,11 @@ log or a terminal run.
   fails, so the first post-compaction request waits for a fresh sample.
 - It drops the per-session sample, rearm state, and compacting mark on
   `session.deleted`.
+- It registers a read-only `context-watch` RPC when the host has
+  `ctx.rpc.register`: `status({ sessionID })` returns the sample, the model
+  window, the active bands, and the compacting flag, and `changed` fires on
+  every completed step and compaction transition. The report plugin's sidebar
+  reads it; hosts without RPC registration keep the warning path unchanged.
 - `rearmPercent` and `rearmTokens` only limit how often the service log repeats
   the warning, never the warning itself.
 

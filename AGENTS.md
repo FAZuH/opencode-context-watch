@@ -60,6 +60,10 @@ hand-edit or delete it here; change it centrally and run
   current context size — ignore it.
 - `ctx.session.compact` does not exist. `ctx.session.command` requires
   `{ name }` and there is no compact command. Do not add a compaction tool.
+- `ctx.rpc.register(contract, handlers)` resolves
+  `{ events: { emit(type, data) } }`. The report plugin calls it from its TUI
+  as `ctx.client.rpc(contract).status(...)` and listens on the same client's
+  `events.on`. Registration is optional; skip it when `ctx.rpc` is absent.
 - `ctx.tool.transform` custom tools take object definitions and return
   `{ content }`, but this plugin needs no tool.
 

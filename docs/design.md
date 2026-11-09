@@ -18,6 +18,7 @@ decision and the supersession of ADR-001, ADR-002, and ADR-003.
 | `ctx.event.subscribe({ signal })` | async iterable of `{ type, data }`; `session.step.ended` data has `sessionID` and `tokens` | the usage cache |
 | `session.compaction.started/ended/failed` | event stream entries carrying `data.sessionID` | suppress warnings and reset the pre-compaction sample |
 | `session.deleted` | event stream entry carrying `data.sessionID` | prune per-session state |
+| `ctx.rpc.register(contract, handlers)` | resolves `{ events: { emit(type, data) } }`; optional on hosts without RPC | the sidebar's `status` method and `changed` event |
 | `ctx.session.compact` | **absent** | — |
 
 `session.usage.updated` also arrives on that stream. It is cumulative
@@ -31,6 +32,7 @@ setup ──► resolveOptions(ctx.options)          → options + problems
       ──► ctx.model.list().data                 → "providerID/modelID" → context window
       ──► ctx.event.subscribe({ signal })       → sessionID → last step usage
       ──► ctx.session.hook("context", cb)       → assess → append warning
+      ──► ctx.rpc.register(contract, handlers)  → status(sessionID) + changed event
       └─► returns cleanup: abort stream, dispose registration
 ```
 
@@ -113,6 +115,21 @@ session's `usage` and `lastWarned` entries: the pre-compaction sample describes 
 context that no longer exists, so the first post-compaction request waits for a
 fresh `session.step.ended`. `session.deleted` drops the same entries plus the
 compacting mark.
+
+## Sidebar status RPC
+
+The plugin registers `src/rpc.ts` when `ctx.rpc.register` exists. `status({
+sessionID })` returns `{ ok, status }`, where `status` carries the sample
+(`tokens`, `window`, `percent`), both bands, `over`, and `compacting`.
+`changed` fires with the same status after every completed step, when
+compaction starts, and when it ends or fails. The model window is remembered
+from the first `context` hook of the session, because `session.step.ended`
+does not name a model. Registration failure is logged and ignored: the warning
+path must work on a host with no RPC.
+
+The report plugin's TUI sidebar consumes this contract. It keeps its own copy
+of the schema, subscribes to `changed`, and asks for `status` on session
+switch; a missing plugin or method leaves its Context section hidden.
 
 ## Configuration
 
