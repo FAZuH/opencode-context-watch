@@ -35,7 +35,7 @@ function Section(props: {
 
 	return (
 		<Show when={props.status()}>
-			<box marginTop={1}>
+			<box>
 				<box flexDirection="row" gap={1}>
 					<text fg={over() ? theme.text.feedback.warning.base : theme.text.base}>
 						<b>Context Watch</b>
