@@ -28,26 +28,30 @@ function Section(props: {
 	});
 
 	const theme = props.ctx.theme;
-	const over = () => {
-		const status = props.status();
-		return status !== undefined && (status.compacting || status.over);
-	};
 
 	return (
 		<Show when={props.status()}>
-			<box>
-				<box flexDirection="row" gap={1}>
-					<text fg={over() ? theme.text.feedback.warning.base : theme.text.base}>
-						<b>Context Watch</b>
+			{(status) => (
+				<box>
+					<box flexDirection="row" gap={1}>
+						<text
+							fg={
+								status().compacting || status().over
+									? theme.text.feedback.warning.base
+									: theme.text.base
+							}
+						>
+							<b>Context Watch</b>
+						</text>
+						<Show when={status().over}>
+							<text fg={theme.text.feedback.warning.base}> · over</text>
+						</Show>
+					</box>
+					<text fg={theme.text.muted} wrapMode="none" truncate>
+						{contextLine(status())}
 					</text>
-					<Show when={props.status()?.over}>
-						<text fg={theme.text.feedback.warning.base}> · over</text>
-					</Show>
 				</box>
-				<text fg={theme.text.muted} wrapMode="none" truncate>
-					{contextLine(props.status()!)}
-				</text>
-			</box>
+			)}
 		</Show>
 	);
 }
