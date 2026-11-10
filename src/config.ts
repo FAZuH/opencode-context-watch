@@ -29,7 +29,7 @@ export const DEFAULTS: Required<ContextWatchOptions> = {
 	rearmTokens: 5_000,
 	verbose: false,
 	message:
-		"[context-watch] Context window usage is at {usage}. This crossed the warning threshold set for this session (warnPercent or warnTokens), not the model's limit, so the window may still have room. Wrap up the current step soon, keep replies concise, avoid re-reading large files, and compact when the work allows.",
+		"[context-watch] Context window usage is at {usage}. This crossed the warning threshold set for this session (warnPercent or warnTokens), not the model's limit, so the window may still have room. Compact immediately after this reply. If nothing is mid-flight and nothing is waiting to be persisted, compact now rather than after the next question. Defer only while a step is still running or its output is not yet written to a file, a commit, or memory; compact as soon as it lands. Keep replies short until compaction completes.",
 };
 
 const CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
