@@ -25,6 +25,11 @@ on:
       DISCORD_RELEASE_WEBHOOK_URL:
         required: false
 
+concurrency:
+  group: release-job-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+
 jobs:
   changelog:
     name: Generate Changelog
@@ -40,6 +45,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: true
 
       - name: Fetch All Tags
         run: git fetch --tags --force origin '+refs/tags/*:refs/tags/*'
@@ -148,6 +154,7 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: true
 
       - name: Fetch All Tags
         run: git fetch --tags --force origin '+refs/tags/*:refs/tags/*'
@@ -203,20 +210,24 @@ jobs:
         run: |
           git config user.name "faz-bot"
           git config user.email "mail@fazuh.com"
-          git remote set-url origin "https://x-access-token:${{ secrets.PRIVATE_TOKEN }}@github.com/${{ github.repository }}"
           TAG="${{ steps.commit.outputs.tag }}"
           git rm --cached -rf --ignore-unmatch node_modules/ version.json
           git commit --amend --no-edit
           if [ -n "$TAG" ]; then
             git tag -f "$TAG"
           fi
-          git push origin release --tags
+          # autopromote can merge main into release mid-run. Rebase so the branch
+          # update is not rejected, and push branch and tag together so a tag can
+          # never land without its commit. A merge landing after the fetch still
+          # fails the run, loudly and without moving the tag.
+          git fetch origin release
+          git rebase origin/release
+          git push --atomic origin release --tags
 
       - name: Sync version bump to main
         run: |
           git config user.name "faz-bot"
           git config user.email "mail@fazuh.com"
-          git remote set-url origin "https://x-access-token:${{ secrets.PRIVATE_TOKEN }}@github.com/${{ github.repository }}"
           git fetch origin main
           git checkout -B main origin/main
           git merge release --no-edit -m "chore(release): sync version bump to main [skip ci]"

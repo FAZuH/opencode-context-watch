@@ -65,6 +65,36 @@ describe("assess", () => {
 		expect(a.next).toEqual({ tokens: 120_000 });
 	});
 
+	test("a null percent band leaves only the token band", () => {
+		const a = assess(
+			{ ...OPTS, warnPercent: null, warnTokens: 100_000 },
+			120_000,
+			100_000,
+			undefined,
+		);
+		expect(a.overPercent).toBe(false);
+		expect(a.overTokens).toBe(true);
+		expect(a.shouldInject).toBe(true);
+	});
+
+	test("a null token band leaves only the percent band", () => {
+		const a = assess({ ...OPTS, warnTokens: null }, 90_000, 100_000, undefined);
+		expect(a.overPercent).toBe(true);
+		expect(a.overTokens).toBe(false);
+		expect(a.shouldInject).toBe(true);
+	});
+
+	test("both bands null never inject", () => {
+		const a = assess(
+			{ ...OPTS, warnPercent: null, warnTokens: null },
+			999_999,
+			100_000,
+			undefined,
+		);
+		expect(a.shouldInject).toBe(false);
+		expect(a.shouldNotify).toBe(false);
+	});
+
 	test("a sub-rearm rise still injects but does not re-notify", () => {
 		const first = assess(OPTS, 90_000, 100_000, undefined);
 		const small = assess(OPTS, 92_000, 100_000, first.next);
@@ -88,6 +118,18 @@ describe("renderMessage", () => {
 		expect(
 			renderMessage("{percent}%/{window}", undefined, 1500, undefined),
 		).toBe("0%/unknown");
+	});
+
+	test("renders {usage} with both counts when the window is known", () => {
+		expect(renderMessage("at {usage}", 29, 300_000, 1_048_576)).toBe(
+			"at 29% (300,000/1,048,576 tokens)",
+		);
+	});
+
+	test("renders {usage} as tokens alone without a window", () => {
+		expect(renderMessage("at {usage}", undefined, 300_000, undefined)).toBe(
+			"at 300,000 tokens",
+		);
 	});
 });
 

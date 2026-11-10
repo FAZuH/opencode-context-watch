@@ -44,6 +44,12 @@ export interface Registration {
 	dispose(): void;
 }
 
+export interface RpcRegistration {
+	events: {
+		emit(type: string, data: unknown): Promise<void>;
+	};
+}
+
 export interface PluginContext {
 	options?: unknown;
 	model: { list(): Promise<{ data?: ModelInfo[] }> };
@@ -52,10 +58,17 @@ export interface PluginContext {
 			name: "context",
 			callback: (event: ContextEvent) => void | Promise<void>,
 		): Promise<Registration>;
+		get?(input: { sessionID: string }): Promise<unknown>;
 	};
 	event: {
 		subscribe(options: {
 			signal?: AbortSignal;
 		}): Promise<AsyncIterable<PluginEvent>> | AsyncIterable<PluginEvent>;
+	};
+	rpc?: {
+		register(
+			contract: unknown,
+			handlers: Record<string, (input: unknown) => Promise<unknown>>,
+		): Promise<RpcRegistration>;
 	};
 }

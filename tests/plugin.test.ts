@@ -19,6 +19,11 @@ const stepEnded = (sessionID: string, tokens: StepTokens): PluginEvent => ({
 	data: { sessionID, tokens },
 });
 
+const sessionEvent = (type: string, sessionID: string): PluginEvent => ({
+	type,
+	data: { sessionID },
+});
+
 /** A macrotask boundary: the plugin's event loop does no I/O per event, so
  * everything it was handed has been processed once this resolves. */
 const drain = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -28,6 +33,27 @@ interface Fix {
 	models?: ModelInfo[];
 	modelListFails?: boolean;
 	hookFails?: boolean;
+	rpc?: boolean;
+	sessionModel?: { id: string; providerID: string };
+}
+
+interface StatusResult {
+	ok: boolean;
+	status?: {
+		sessionID?: string;
+		tokens?: number;
+		window?: number;
+		percent?: number;
+		warnPercent?: number | null;
+		warnTokens?: number | null;
+		over?: boolean;
+		compacting?: boolean;
+	};
+}
+
+interface ChangedEvent {
+	sessionID: string;
+	status: { tokens?: number };
 }
 
 function fakeContext(fix: Fix = {}) {
@@ -36,6 +62,8 @@ function fakeContext(fix: Fix = {}) {
 	let signal: AbortSignal | undefined;
 	let hooks: ((event: ContextEvent) => void)[] = [];
 	let disposals = 0;
+	let statusHandler: ((input: unknown) => Promise<unknown>) | undefined;
+	const emits: { type: string; data: ChangedEvent }[] = [];
 
 	const ctx: PluginContext = {
 		options: fix.options,
@@ -45,6 +73,22 @@ function fakeContext(fix: Fix = {}) {
 				return { data: fix.models ?? [] };
 			},
 		},
+		...(fix.rpc
+			? {
+					rpc: {
+						register: async (_contract, handlers) => {
+							statusHandler = handlers.status;
+							return {
+								events: {
+									emit: async (type: string, data: unknown) => {
+										emits.push({ type, data: data as ChangedEvent });
+									},
+								},
+							};
+						},
+					},
+				}
+			: {}),
 		session: {
 			hook: async (_name, callback) => {
 				if (fix.hookFails) throw new Error("hook boom");
@@ -55,6 +99,7 @@ function fakeContext(fix: Fix = {}) {
 					},
 				};
 			},
+			get: async () => ({ data: { model: fix.sessionModel } }),
 		},
 		event: {
 			subscribe: async (options) => {
@@ -99,6 +144,11 @@ function fakeContext(fix: Fix = {}) {
 		ctx,
 		emit,
 		request,
+		status: async (sessionID: string): Promise<StatusResult> => {
+			if (!statusHandler) throw new Error("no status handler registered");
+			return (await statusHandler({ sessionID })) as StatusResult;
+		},
+		emits: () => emits,
 		disposals: () => disposals,
 		aborted: () => signal?.aborted === true,
 	};
@@ -126,7 +176,7 @@ describe("plugin setup", () => {
 		});
 		await fake.emit(stepEnded("s1", { input: 90_000, output: 0 }));
 		const messages = await fake.request({ sessionID: "s1" });
-		expect(injectedText(messages)).toContain("90%");
+		expect(injectedText(messages)).toContain("90% (90,000/100,000 tokens)");
 	});
 
 	test("does not warn before any step has completed", async () => {
@@ -209,6 +259,71 @@ describe("plugin setup", () => {
 		expect(await fake.request({ sessionID: "s2" })).toEqual([]);
 	});
 
+	test("a compaction suppresses the warning and clears the old sample", async () => {
+		const fake = await start({
+			options: { warnPercent: 0.8, warnTokens: 10_000_000 },
+			models: MODELS,
+		});
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+
+		await fake.emit(sessionEvent("session.compaction.started", "s1"));
+		expect(await fake.request({ sessionID: "s1" })).toEqual([]);
+
+		await fake.emit(sessionEvent("session.compaction.ended", "s1"));
+		expect(await fake.request({ sessionID: "s1" })).toEqual([]);
+
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+	});
+
+	test("a failed compaction also clears the old sample", async () => {
+		const fake = await start({
+			options: { warnPercent: 0.8, warnTokens: 10_000_000 },
+			models: MODELS,
+		});
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+		await fake.emit(sessionEvent("session.compaction.failed", "s1"));
+		expect(await fake.request({ sessionID: "s1" })).toEqual([]);
+	});
+
+	test("session deletion drops the usage sample and the compacting mark", async () => {
+		const fake = await start({
+			options: { warnPercent: 0.8, warnTokens: 10_000_000 },
+			models: MODELS,
+		});
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		await fake.emit(sessionEvent("session.compaction.started", "s1"));
+		await fake.emit(sessionEvent("session.deleted", "s1"));
+
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+	});
+
+	test("a null warnPercent leaves only the token band", async () => {
+		const fake = await start({
+			options: { warnPercent: null, warnTokens: 1_000 },
+			models: MODELS,
+		});
+		await fake.emit(stepEnded("s1", { input: 2_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+		await fake.emit(stepEnded("s1", { input: 500 }));
+		expect(await fake.request({ sessionID: "s1" })).toEqual([]);
+	});
+
+	test("the default message renders tokens alone without a window", async () => {
+		const fake = await start({
+			options: { warnPercent: null, warnTokens: 1_000 },
+			models: [],
+		});
+		await fake.emit(stepEnded("s1", { input: 2_000 }));
+		const text = injectedText(await fake.request({ sessionID: "s1" }));
+		expect(text).toContain("2,000 tokens");
+		expect(text).not.toContain("unknown");
+		expect(text).not.toContain("0%");
+	});
+
 	test("warns on every above-threshold request but logs only on a rearm rise", async () => {
 		const log = spyOn(console, "log").mockImplementation(() => {});
 		try {
@@ -273,7 +388,7 @@ describe("plugin setup", () => {
 			});
 			expect(error.mock.calls.map((call) => String(call[0]))).toEqual([
 				'[context-watch] bogus: unknown option "bogus" (ignored)',
-				'[context-watch] warnPercent: must be a number greater than 0 and at most 100 (got "nope")',
+				'[context-watch] warnPercent: must be a number greater than 0 and at most 100 or null (got "nope")',
 			]);
 			await fake.emit(stepEnded("s1", { input: 1_500 }));
 			expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
@@ -335,5 +450,97 @@ describe("plugin setup", () => {
 		await fake.dispose();
 		expect(fake.aborted()).toBe(true);
 		expect(fake.disposals()).toBe(1);
+	});
+});
+
+describe("status RPC", () => {
+	const OPTIONS = {
+		warnPercent: 0.8,
+		warnTokens: 10_000_000,
+	};
+
+	test("answers before any sample with the bands and no usage", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		expect(await fake.status("s1")).toEqual({
+			ok: true,
+			status: {
+				sessionID: "s1",
+				warnPercent: 0.8,
+				warnTokens: 10_000_000,
+				over: false,
+				compacting: false,
+			},
+		});
+	});
+
+	test("reports tokens, window, and percent after a step", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		await fake.request({ sessionID: "s1" }); // records the model window
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.status("s1")).toEqual({
+			ok: true,
+			status: {
+				sessionID: "s1",
+				tokens: 90_000,
+				window: 100_000,
+				percent: 90,
+				warnPercent: 0.8,
+				warnTokens: 10_000_000,
+				over: true,
+				compacting: false,
+			},
+		});
+	});
+
+	test("resolves the window from the session when no hook has run", async () => {
+		const fake = await start({
+			options: OPTIONS,
+			models: MODELS,
+			rpc: true,
+			sessionModel: { id: "big", providerID: "acme" },
+		});
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		const result = await fake.status("s1");
+		expect(result.status?.window).toBe(100_000);
+		expect(result.status?.percent).toBe(90);
+	});
+
+	test("emits changed with the new status after a step", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		await fake.request({ sessionID: "s1" });
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(fake.emits()).toHaveLength(1);
+		expect(fake.emits()[0]?.type).toBe("changed");
+		expect(fake.emits()[0]?.data.status.tokens).toBe(90_000);
+	});
+
+	test("compaction marks the status and clears the sample at the end", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		await fake.request({ sessionID: "s1" });
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		await fake.emit(sessionEvent("session.compaction.started", "s1"));
+		const during = await fake.status("s1");
+		expect(during.status?.compacting).toBe(true);
+		expect(during.status?.over).toBe(false);
+
+		await fake.emit(sessionEvent("session.compaction.ended", "s1"));
+		const after = await fake.status("s1");
+		expect(after.status?.compacting).toBe(false);
+		expect(after.status?.tokens).toBeUndefined();
+	});
+
+	test("session deletion clears the status", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		await fake.request({ sessionID: "s1" });
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		await fake.emit(sessionEvent("session.deleted", "s1"));
+		const status = await fake.status("s1");
+		expect(status.status?.tokens).toBeUndefined();
+		expect(status.status?.window).toBeUndefined();
+	});
+
+	test("a missing session id is not a status", async () => {
+		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
+		expect(await fake.status("")).toEqual({ ok: false });
 	});
 });
