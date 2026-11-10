@@ -1,3 +1,10 @@
+## [1.0.3](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.2...v1.0.3) (2026-11-10)
+
+
+### Bug Fixes
+
+* **plugin:** declare the TUI runtime dependencies ([fa3cdde](https://github.com/FAZuH/opencode-context-watch/commit/fa3cdded45079f12b5cef358d608b31265ab71c2))
+
 ## [1.0.2](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.1...v1.0.2) (2026-11-10)
 
 
@@ -45,20 +52,4 @@
 ### Features
 
 * **plugin:** add compact_context tool and post-compaction message ([cd015f7](https://github.com/FAZuH/opencode-context-watch/commit/cd015f762d8da776fb07d53e9fadad974b201b0f)), closes [#5449](https://github.com/FAZuH/opencode-context-watch/issues/5449)
-
-## [0.1.2](https://github.com/FAZuH/opencode-context-watch/compare/v0.1.1...v0.1.2) (2026-08-05)
-
-
-### ⚠ BREAKING CHANGES
-
-* **config:** Config file is renamed. Rename your config file to `opencode-context-watch.json`.
-
-### Features
-
-* **config:** Show an error toast for invalid config and fall back to defaults ([4664e3a](https://github.com/FAZuH/opencode-context-watch/commit/4664e3aa22a7dac3f08a2da7e9ff6e521fe10ffa))
-
-
-### Code Refactoring
-
-* **config:** rename config file to opencode-context-watch.json ([f6ffcb5](https://github.com/FAZuH/opencode-context-watch/commit/f6ffcb57bb89e5f4a88d6b5fcfa93dc7d6567035))
 
