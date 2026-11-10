@@ -1,6 +1,6 @@
 {
   "name": "opencode-context-watch",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "OpenCode V2 plugin to warn when a session's context window usage crosses a configurable threshold",
   "exports": {
     ".": "./src/index.ts",
