@@ -31,7 +31,7 @@ function Section(props: {
 
 	return (
 		<Show when={props.status()}>
-			{(status) => (
+			{(status: () => ContextStatus) => (
 				<box>
 					<box flexDirection="row" gap={1}>
 						<text
