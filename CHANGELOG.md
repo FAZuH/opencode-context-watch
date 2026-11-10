@@ -1,3 +1,10 @@
+## [1.0.2](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.1...v1.0.2) (2026-11-10)
+
+
+### Bug Fixes
+
+* **plugin:** drop the extra top margin on the sidebar section ([5e8f133](https://github.com/FAZuH/opencode-context-watch/commit/5e8f133f21f14d0ada7a8d265c65b309b0d58858))
+
 ## [1.0.1](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.0...v1.0.1) (2026-11-10)
 
 
@@ -54,15 +61,4 @@
 ### Code Refactoring
 
 * **config:** rename config file to opencode-context-watch.json ([f6ffcb5](https://github.com/FAZuH/opencode-context-watch/commit/f6ffcb57bb89e5f4a88d6b5fcfa93dc7d6567035))
-
-## [0.1.1](https://github.com/FAZuH/opencode-context-watch/compare/v0.1.0...v0.1.1) (2026-08-05)
-
-
-### ⚠ BREAKING CHANGES
-
-* **config:** The `mode` option, the `warnThreshold` config key, and the `CONTEXT_WATCH_MODE`/`CONTEXT_WATCH_THRESHOLD` env vars are removed. Use `warnPercent` instead of `warnThreshold`; `warnTokens` now runs alongside it instead of being exclusive.
-
-### Features
-
-* **config:** support warnPercent and warnTokens together, remove mode ([3cd960f](https://github.com/FAZuH/opencode-context-watch/commit/3cd960f669f6ed4dfcaba96d737b8ccace71a6a8))
 
