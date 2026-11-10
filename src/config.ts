@@ -29,7 +29,7 @@ export const DEFAULTS: Required<ContextWatchOptions> = {
 	rearmTokens: 5_000,
 	verbose: false,
 	message:
-		"[context-watch] Context window usage is at {usage}. The session is getting full: wrap up the current step soon, keep replies concise, avoid re-reading large files, and be ready to prepare for compaction if you continue.",
+		"[context-watch] Context window usage is at {usage}. This crossed the warning threshold set for this session (warnPercent or warnTokens), not the model's limit, so the window may still have room. Wrap up the current step soon, keep replies concise, avoid re-reading large files, and compact when the work allows.",
 };
 
 const CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
