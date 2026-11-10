@@ -1,3 +1,10 @@
+## [1.0.4](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.3...v1.0.4) (2026-11-10)
+
+
+### Bug Fixes
+
+* **plugin:** narrow the status inside Show before formatting ([0fdac9c](https://github.com/FAZuH/opencode-context-watch/commit/0fdac9ccbda42252e35167de00fa6157e2f431c6))
+
 ## [1.0.3](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.2...v1.0.3) (2026-11-10)
 
 
@@ -45,11 +52,4 @@
 ### Code Refactoring
 
 * **plugin:** rewrite for opencode v2 only ([61da70b](https://github.com/FAZuH/opencode-context-watch/commit/61da70b28ec3951a628504a06d7c7664dd4c61f9))
-
-## [0.1.3](https://github.com/FAZuH/opencode-context-watch/compare/v0.1.2...v0.1.3) (2026-08-07)
-
-
-### Features
-
-* **plugin:** add compact_context tool and post-compaction message ([cd015f7](https://github.com/FAZuH/opencode-context-watch/commit/cd015f762d8da776fb07d53e9fadad974b201b0f)), closes [#5449](https://github.com/FAZuH/opencode-context-watch/issues/5449)
 
