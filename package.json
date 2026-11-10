@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "OpenCode V2 plugin to warn when a session's context window usage crosses a configurable threshold",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.tsx"
   },
   "repository": {
     "type": "git",

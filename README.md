@@ -58,6 +58,16 @@ The agent reads that as part of the conversation, so it finishes its current ste
 compactly instead of drifting into a full window. Set `options` to taste, then
 restart opencode.
 
+### Sidebar
+
+In the TUI the plugin adds a **Context Watch** section to the sidebar for the
+session on screen: usage against the model window, the band that will warn, and
+whether a compaction is running. The title turns yellow over the band. It reads
+its own `context-watch.status` RPC and follows the plugin's `changed` event, so
+it needs no other plugin installed.
+
+`/context-watch` toggles the section.
+
 ## Options
 
 | Option | Default | Description |
