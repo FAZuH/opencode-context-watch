@@ -28,8 +28,10 @@ export const DEFAULTS: Required<ContextWatchOptions> = {
 	rearmPercent: 5,
 	rearmTokens: 5_000,
 	verbose: false,
-	message:
-		"[context-watch] Context window usage is at {usage}. This crossed the warning threshold set for this session (warnPercent or warnTokens), not the model's limit, so the window may still have room. Compact immediately after this reply. If nothing is mid-flight and nothing is waiting to be persisted, compact now rather than after the next question. Defer only while a step is still running or its output is not yet written to a file, a commit, or memory; compact as soon as it lands. Keep replies short until compaction completes.",
+	message: `[context-watch] Context {usage} is above this session's threshold.
+1. Persist only what your workflow requires: scratch space, memory, or task notes. Do not create a git commit unless the task asks for one.
+2. Replace <session-id> of the following command and run it:
+opencode api post /api/session/<session-id>/compact --data '{}' && opencode api post /api/session/<session-id>/prompt --data '{"text":"Context compacted. Continue the task based on the summary above.","delivery":"steer"}'`,
 };
 
 const CONFIG_KEYS = new Set(Object.keys(DEFAULTS));
