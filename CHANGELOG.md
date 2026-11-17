@@ -1,3 +1,10 @@
+## [1.0.6](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.5...v1.0.6) (2026-11-17)
+
+
+### Bug Fixes
+
+* **config:** make the compaction warning an explicit two-step instruction ([7cf2409](https://github.com/FAZuH/opencode-context-watch/commit/7cf2409f5107fe7dbf8f1d2643134276c7c11f7d))
+
 ## [1.0.5](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.4...v1.0.5) (2026-11-10)
 
 
@@ -26,19 +33,4 @@
 ### Bug Fixes
 
 * **plugin:** drop the extra top margin on the sidebar section ([5e8f133](https://github.com/FAZuH/opencode-context-watch/commit/5e8f133f21f14d0ada7a8d265c65b309b0d58858))
-
-## [1.0.1](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.0...v1.0.1) (2026-11-10)
-
-
-### Features
-
-* **plugin:** add the Context Watch sidebar section ([0d35342](https://github.com/FAZuH/opencode-context-watch/commit/0d3534228b7f81f43c84a318ec21fee71e8f46e4))
-* **plugin:** expose context status over RPC for the sidebar ([ec4fc2f](https://github.com/FAZuH/opencode-context-watch/commit/ec4fc2f6cf7635b05708d454d9875d6b7cf668ac))
-* **plugin:** handle compaction state and nullable warning bands ([3be8cec](https://github.com/FAZuH/opencode-context-watch/commit/3be8cecf3cb00b0b10eae291baf9e6cd0ba5ad86))
-
-
-### Bug Fixes
-
-* **plugin:** resolve the status window from the session record ([a6295d9](https://github.com/FAZuH/opencode-context-watch/commit/a6295d964f080ec5d20be2d987325351694bf51b))
-* **plugin:** say which threshold fired ([b26e304](https://github.com/FAZuH/opencode-context-watch/commit/b26e3048b0300d2a8931a7ece3538c1fa6051e4d))
 
