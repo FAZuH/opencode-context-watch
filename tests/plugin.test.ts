@@ -7,6 +7,7 @@ import type {
 	PluginContext,
 	PluginEvent,
 	StepTokens,
+	ToolDefinition,
 } from "../src/types";
 
 const MODELS: ModelInfo[] = [
@@ -34,6 +35,9 @@ interface Fix {
 	modelListFails?: boolean;
 	hookFails?: boolean;
 	rpc?: boolean;
+	tool?: boolean;
+	toolTransformFails?: boolean;
+	compactFails?: unknown;
 	sessionModel?: { id: string; providerID: string };
 }
 
@@ -64,6 +68,13 @@ function fakeContext(fix: Fix = {}) {
 	let disposals = 0;
 	let statusHandler: ((input: unknown) => Promise<unknown>) | undefined;
 	const emits: { type: string; data: ChangedEvent }[] = [];
+	let toolDefinition: ToolDefinition | undefined;
+	let toolDisposals = 0;
+	const calls: {
+		compact: unknown[];
+		prompt: unknown[];
+		order: string[];
+	} = { compact: [], prompt: [], order: [] };
 
 	const ctx: PluginContext = {
 		options: fix.options,
@@ -100,7 +111,35 @@ function fakeContext(fix: Fix = {}) {
 				};
 			},
 			get: async () => ({ data: { model: fix.sessionModel } }),
+			compact: async (input) => {
+				calls.compact.push(input);
+				calls.order.push("compact");
+				if (fix.compactFails !== undefined) throw fix.compactFails;
+			},
+			prompt: async (input) => {
+				calls.prompt.push(input);
+				calls.order.push("prompt");
+			},
 		},
+		...(fix.tool
+			? {
+					tool: {
+						transform: async (callback) => {
+							if (fix.toolTransformFails) throw new Error("tool boom");
+							callback({
+								add: (definition) => {
+									toolDefinition = definition;
+								},
+							});
+							return {
+								dispose: () => {
+									toolDisposals++;
+								},
+							};
+						},
+					},
+				}
+			: {}),
 		event: {
 			subscribe: async (options) => {
 				const controller = options.signal;
@@ -151,6 +190,9 @@ function fakeContext(fix: Fix = {}) {
 		emits: () => emits,
 		disposals: () => disposals,
 		aborted: () => signal?.aborted === true,
+		toolDefinition: () => toolDefinition,
+		toolDisposals: () => toolDisposals,
+		calls: () => calls,
 	};
 }
 
@@ -542,5 +584,89 @@ describe("status RPC", () => {
 	test("a missing session id is not a status", async () => {
 		const fake = await start({ options: OPTIONS, models: MODELS, rpc: true });
 		expect(await fake.status("")).toEqual({ ok: false });
+	});
+});
+
+describe("compact_context registration", () => {
+	const CONTINUATION = "Resume the task from the summary.";
+
+	test("setup registers the tool and disposes it on cleanup", async () => {
+		const fake = await start({ tool: true, models: MODELS });
+		expect(fake.toolDefinition()?.name).toBe("compact_context");
+		expect(fake.toolDisposals()).toBe(0);
+		await fake.dispose();
+		expect(fake.toolDisposals()).toBe(1);
+	});
+
+	test("the registered tool resolves the session from the execute context", async () => {
+		const fake = await start({ tool: true, models: MODELS });
+		const tool = fake.toolDefinition() as ToolDefinition;
+		const result = await tool.execute(
+			{ message: CONTINUATION },
+			{ sessionID: "s-9" },
+		);
+
+		expect(fake.calls().compact).toEqual([{ sessionID: "s-9" }]);
+		expect(fake.calls().prompt).toEqual([
+			{
+				sessionID: "s-9",
+				text: CONTINUATION,
+				delivery: "steer",
+			},
+		]);
+		expect(fake.calls().order).toEqual(["compact", "prompt"]);
+		expect(typeof result.content).toBe("string");
+	});
+
+	test("a compaction conflict returns a failure result and skips the prompt", async () => {
+		const conflict = Object.assign(new Error("busy"), {
+			_tag: "CompactionConflictError",
+		});
+		const fake = await start({
+			tool: true,
+			models: MODELS,
+			compactFails: conflict,
+		});
+		const tool = fake.toolDefinition() as ToolDefinition;
+		const result = await tool.execute(
+			{ message: CONTINUATION },
+			{ sessionID: "s-9" },
+		);
+
+		expect(fake.calls().prompt).toEqual([]);
+		expect(result.content).toContain("already pending");
+	});
+
+	test("a host without tool support keeps the warning path", async () => {
+		const fake = await start({ models: MODELS });
+		expect(fake.toolDefinition()).toBeUndefined();
+		await fake.emit(stepEnded("s1", { input: 90_000 }));
+		expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+	});
+
+	test("a failed tool registration is logged and does not stop warnings", async () => {
+		const error = spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const fake = await start({
+				tool: true,
+				toolTransformFails: true,
+				models: MODELS,
+			});
+			expect(String(error.mock.calls[0]?.[0])).toContain(
+				"tool registration failed",
+			);
+			await fake.emit(stepEnded("s1", { input: 90_000 }));
+			expect(await fake.request({ sessionID: "s1" })).toHaveLength(1);
+		} finally {
+			error.mockRestore();
+		}
+	});
+
+	test("a rejected hook registration disposes the tool registration", async () => {
+		const fake = fakeContext({ models: MODELS, hookFails: true, tool: true });
+		await expect(plugin.setup(fake.ctx)).rejects.toThrow("hook boom");
+		await drain();
+		expect(fake.aborted()).toBe(true);
+		expect(fake.toolDisposals()).toBe(1);
 	});
 });

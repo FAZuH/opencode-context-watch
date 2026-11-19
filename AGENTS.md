@@ -38,7 +38,7 @@ bun build src/index.ts --outdir dist
 hand-edit or delete it here; change it centrally and run
 `./sync.sh push typescript opencode-context-watch`.
 
-## Verified V2 runtime facts (OpenCode 2.0.16, probed 2026-09-25)
+## Verified V2 runtime facts (OpenCode 2.0.16 probed 2026-09-25; 2.3.0 probed 2026-11-20)
 
 - A plain object default export `{ id, setup(ctx) }` with no runtime OpenCode
   package import loads under `.opencode/plugins/<name>/index.ts` and from the
@@ -58,8 +58,10 @@ hand-edit or delete it here; change it centrally and run
   `tokens: { input, output, reasoning, cache: { read, write } }` for the latest
   step. `session.usage.updated` is cumulative session consumption, NOT the
   current context size — ignore it.
-- `ctx.session.compact` does not exist. `ctx.session.command` requires
-  `{ name }` and there is no compact command. Do not add a compaction tool.
+- On 2.0.16 `ctx.session.compact` was absent and `ctx.session.command`
+  required `{ name }` with no compact command. On 2.3.0
+  `ctx.session.compact({ sessionID })` exists (verified 2026-11-20); this
+  plugin registers `compact_context`.
 - `ctx.rpc.register(contract, handlers)` resolves
   `{ events: { emit(type, data) } }`. The report plugin calls it from its TUI
   as `ctx.client.rpc(contract).status(...)` and listens on the same client's
@@ -68,8 +70,7 @@ hand-edit or delete it here; change it centrally and run
   `{ data }` by the service client); its `model` is `{ id, providerID,
   variant }`. `session.step.ended` carries no model, so this is the fallback
   window source for a status call answered by another project instance.
-- `ctx.tool.transform` custom tools take object definitions and return
-  `{ content }`, but this plugin needs no tool.
+- `ctx.tool.transform` registers the `compact_context` tool with a `{ message }` input; it reads `context.sessionID`, then compacts and posts a steer prompt, returning `{ content }`.
 
 ## Critical Implementation Notes
 

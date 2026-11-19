@@ -50,6 +50,38 @@ export interface RpcRegistration {
 	};
 }
 
+export interface SessionCommands {
+	compact?(input: { sessionID: string }): Promise<unknown>;
+	prompt?(input: {
+		sessionID: string;
+		text: string;
+		delivery: "steer";
+	}): Promise<unknown>;
+}
+
+export interface ToolContext {
+	sessionID?: string;
+}
+
+export interface ToolResult {
+	content?: string;
+}
+
+export interface ToolDefinition {
+	name: string;
+	description: string;
+	input: {
+		type: "object";
+		properties: Record<string, { type: string }>;
+		required?: string[];
+	};
+	execute(input: unknown, context: ToolContext): Promise<ToolResult>;
+}
+
+export interface ToolEditor {
+	add(definition: ToolDefinition): void;
+}
+
 export interface PluginContext {
 	options?: unknown;
 	model: { list(): Promise<{ data?: ModelInfo[] }> };
@@ -59,11 +91,14 @@ export interface PluginContext {
 			callback: (event: ContextEvent) => void | Promise<void>,
 		): Promise<Registration>;
 		get?(input: { sessionID: string }): Promise<unknown>;
-	};
+	} & SessionCommands;
 	event: {
 		subscribe(options: {
 			signal?: AbortSignal;
 		}): Promise<AsyncIterable<PluginEvent>> | AsyncIterable<PluginEvent>;
+	};
+	tool?: {
+		transform(callback: (editor: ToolEditor) => void): Promise<Registration>;
 	};
 	rpc?: {
 		register(
