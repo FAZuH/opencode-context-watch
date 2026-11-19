@@ -8,11 +8,12 @@
  */
 import { Show, createEffect, createSignal, onCleanup } from "solid-js";
 
-import { Contract } from "./rpc";
 import { contextLine } from "./line";
+import { Contract } from "./rpc";
 import type { ContextStatus } from "./status";
 
 function Section(props: {
+	// biome-ignore lint/suspicious/noExplicitAny: host plugin context type is not vendored
 	ctx: any;
 	sessionID: string;
 	status: () => ContextStatus | undefined;
@@ -59,8 +60,13 @@ function Section(props: {
 export default {
 	id: "opencode-context-watch-tui",
 
+	// biome-ignore lint/suspicious/noExplicitAny: host setup context type is not vendored
 	setup(ctx: any) {
-		if (typeof ctx.client?.rpc !== "function" || typeof ctx.ui?.slot !== "function") return;
+		if (
+			typeof ctx.client?.rpc !== "function" ||
+			typeof ctx.ui?.slot !== "function"
+		)
+			return;
 
 		const rpc = ctx.client.rpc(Contract);
 		const [contexts, setContexts] = createSignal<
@@ -78,6 +84,7 @@ export default {
 			try {
 				void rpc
 					.status({ sessionID })
+					// biome-ignore lint/suspicious/noExplicitAny: RPC result type is not exported by the contract
 					.then((result: any) => {
 						if (result?.ok && result.status) remember(sessionID, result.status);
 					})
@@ -87,6 +94,7 @@ export default {
 
 		let off: (() => void) | undefined;
 		try {
+			// biome-ignore lint/suspicious/noExplicitAny: RPC event payload has no exported type
 			off = rpc.events.on("changed", (event: any) => {
 				const sessionID = String(event?.data?.sessionID ?? "");
 				const status = event?.data?.status;
@@ -99,6 +107,7 @@ export default {
 
 		ctx.ui.slot({
 			append: "sidebar.content",
+			// biome-ignore lint/suspicious/noExplicitAny: slot render input is host-defined
 			render: (input: any) => {
 				const sessionID = String(input?.sessionID ?? "");
 				return (
@@ -130,6 +139,7 @@ export default {
 							palette: true,
 							slash: { name: "context-watch" },
 							run: () => {
+								// biome-ignore lint/suspicious/noExplicitAny: storage draft type is host-defined
 								void setView((draft: any) => {
 									draft.shown = draft.shown === false;
 								});
