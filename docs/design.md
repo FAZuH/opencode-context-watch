@@ -7,7 +7,11 @@ step or prepare for compaction before the window fills.
 V1 support is gone: see [ADR-004](decisions/ADR-004-v2-only-rewrite.md) for the
 decision and the supersession of ADR-001, ADR-002, and ADR-003.
 
-## Runtime contracts (OpenCode 2.0.16, probed 2026-09-25)
+## Runtime contracts
+
+The first eight rows were probed on OpenCode 2.0.16 (2026-09-25). The tool rows
+were probed on 2.3.0 (2026-11-20; see
+[the API findings](research/2026-11-20-compact-tool-api.md)).
 
 | Member | Shape | Used for |
 |--------|-------|----------|
@@ -19,11 +23,19 @@ decision and the supersession of ADR-001, ADR-002, and ADR-003.
 | `session.compaction.started/ended/failed` | event stream entries carrying `data.sessionID` | suppress warnings and reset the pre-compaction sample |
 | `session.deleted` | event stream entry carrying `data.sessionID` | prune per-session state |
 | `ctx.rpc.register(contract, handlers)` | resolves `{ events: { emit(type, data) } }`; optional on hosts without RPC | the sidebar's `status` method and `changed` event |
-| `ctx.session.compact` | **absent** | — |
+| `await ctx.tool.transform(cb)` | resolves `{ dispose() }`; `cb(editor)` is synchronous and `editor.add(definition)` registers a tool | the `compact_context` tool |
+| tool `execute(input, context)` | `context.sessionID` is the calling session; returns `{ content: string }` | session resolution and the result |
+| `await ctx.session.compact({ sessionID })` | admits a compaction and wakes the runner; rejects with `CompactionConflictError` | start the compaction |
+| `await ctx.session.prompt({ sessionID, text, delivery: "steer" })` | admits a user message; rejects with `PromptConflictError` | post the continuation after the summary |
 
 `session.usage.updated` also arrives on that stream. It is cumulative
 consumption for the whole session, not the current context size, so the plugin
 ignores it.
+
+The tool's `input` is a raw JSON Schema object with only a required `message`
+string. No `output` schema is registered. `ctx.tool` and the two session
+commands are optional in the structural types: a host without them still loads
+the plugin, and the tool reports a short failure result when called.
 
 ## Architecture
 
@@ -32,8 +44,9 @@ setup ──► resolveOptions(ctx.options)          → options + problems
       ──► ctx.model.list().data                 → "providerID/modelID" → context window
       ──► ctx.event.subscribe({ signal })       → sessionID → last step usage
       ──► ctx.session.hook("context", cb)       → assess → append warning
+      ──► ctx.tool.transform(cb)               → compact_context tool
       ──► ctx.rpc.register(contract, handlers)  → status(sessionID) + changed event
-      └─► returns cleanup: abort stream, dispose registration
+      └─► returns cleanup: abort stream, dispose both registrations
 ```
 
 ```
@@ -108,6 +121,14 @@ the first one would show the warning in that step and lose it on the next
 
 ## Compaction and session state
 
+The `compact_context` tool is the plugin's one compaction trigger. Its input is
+only `message`; it reads `sessionID` from the tool context, admits the compaction
+with `ctx.session.compact`, then posts the message with
+`ctx.session.prompt({ delivery: "steer" })`. Both calls are admit-and-wake and
+return before the work finishes. The inbox runs the compaction first and keeps
+the steer text verbatim after the checkpoint. Conflicts and other failures
+return a short `{ content }` result instead of throwing into the session loop.
+
 `session.compaction.started` marks the session as compacting. The context hook
 returns without injecting until `session.compaction.ended` or
 `session.compaction.failed` clears the mark. Both end events also drop the
@@ -168,6 +189,10 @@ run.
   quietly when the abort signal fires. It must never reject into the session.
 - The context hook body cannot throw: every input is validated (`usageTotal`
   returns `undefined` without a sample, `assess` ignores a missing window).
+- The `compact_context` tool returns a short `{ content }` result for invalid
+  input, a missing calling session, a host without session compaction, and a
+  conflict or failure from either session call. It never throws into the
+  session loop.
 
 ## Verification
 

@@ -11,15 +11,16 @@ split along; use them in code, docs and reviews.
 | **Step sample** | The `session.step.ended` usage for a session. Cumulative `session.usage.updated` events are not a sample. No sample yet means no warning. |
 | **Threshold band** | One of two crossing conditions, OR'd: the **percent band** (`usage/window >= warnPercent`) needs a known window; the **tokens band** (`usage >= warnTokens`) is window-independent. |
 | **Rearm** | Log rule: a band re-logs only after rising `rearmPercent` points or `rearmTokens` tokens since the last log. The rearm NEVER gates the injection. |
-| **Warning injection** | The transient synthetic user message appended to the current hook call's message list while above a band. Never persisted, so it is appended on EVERY above-threshold request. |
+| **Warning injection** | The transient synthetic user message appended to the current hook call's message list while above a band. Never persisted, so it is appended on EVERY above-threshold request. The default tells the agent to call `compact_context`. |
 | **Config problem** | A `{ key, message }` validation failure from `resolveOptions`; console-logged, the key falls back to its default. |
-| **Compaction** | Freeing context by summarizing the session. Owned by OpenCode; the plugin registers no trigger for it. |
+| **Compaction** | Freeing context by summarizing the session. OpenCode performs it; the plugin's `compact_context` tool admits it and then posts a steer prompt with the continuation text. |
 
 ## Module map
 
 | Module | Responsibility |
 |--------|----------------|
 | `src/config.ts` | Pure validation of `ctx.options` with per-key fallback; reports problems. |
+| `src/compact.ts` | The `compact_context` tool definition: session resolution, compact then steer, error-to-result handling. |
 | `src/context.ts` | Pure usage totals, threshold assessment, warning text, synthetic message. |
 | `src/types.ts` | Narrow structural types for the V2 context members the plugin calls. |
 | `src/index.ts` | Composition root: model-window map, usage cache, context hook, cleanup. |

@@ -30,8 +30,7 @@ export const DEFAULTS: Required<ContextWatchOptions> = {
 	verbose: false,
 	message: `[context-watch] Context {usage} is above this session's threshold.
 1. Persist only what your workflow requires: scratch space, memory, or task notes. Do not create a git commit unless the task asks for one.
-2. Replace <session-id> of the following command and run it:
-opencode api post /api/session/<session-id>/compact --data '{}' && opencode api post /api/session/<session-id>/prompt --data '{"text":"Context compacted. Continue the task based on the summary above.","delivery":"steer"}'`,
+2. Call the compact_context tool with one continuation message describing how to resume the task from the summary.`,
 };
 
 const CONFIG_KEYS = new Set(Object.keys(DEFAULTS));

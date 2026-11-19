@@ -100,6 +100,12 @@ describe("resolveOptions", () => {
 		expect(problems.map((p) => p.key)).toEqual(["message"]);
 	});
 
+	test("the default message uses the compact_context tool, not a shell command", () => {
+		expect(DEFAULTS.message).toContain("compact_context");
+		expect(DEFAULTS.message).not.toContain("opencode api");
+		expect(DEFAULTS.message).not.toContain("/api/session/");
+	});
+
 	test("unknown keys and a non-object root are reported", () => {
 		expect(keysOf({ toast: false, compact_context: true })).toEqual([
 			"toast",
