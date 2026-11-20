@@ -19,8 +19,9 @@
 
 > [!warning]
 > This plugin targets **OpenCode 2.x only**. On OpenCode 1.x it is a silent no-op:
-> there is no V1 support and no fallback path. Verified against OpenCode 2.0.16 —
-> see [ADR-004](docs/decisions/ADR-004-v2-only-rewrite.md).
+> there is no V1 support and no fallback path. See
+> [ADR-004](docs/decisions/ADR-004-v2-only-rewrite.md); the compaction tool API is
+> verified on OpenCode 2.3.0.
 
 ## Installation
 
@@ -51,12 +52,15 @@ each model request whose context usage is over a threshold it adds a warning to
 the conversation:
 
 ```
-[context-watch] Context window usage is at 78% (102,400/128,000 tokens). The session is getting full: wrap up the current step soon, …
+[context-watch] Context 78% (102,400/128,000 tokens) is above this session's threshold.
+1. Persist only what your workflow requires: scratch space, memory, or task notes. Do not create a git commit unless the task asks for one.
+2. Call the compact_context tool with one continuation message describing how to resume the task from the summary.
 ```
 
-The agent reads that as part of the conversation, so it finishes its current step
-compactly instead of drifting into a full window. Set `options` to taste, then
-restart opencode.
+The agent reads that as part of the conversation, saves any required notes, then
+calls the plugin's `compact_context` tool. The tool compacts that session and
+posts the message as a steer prompt after the summary. Set `options` to taste,
+then restart opencode.
 
 ### Sidebar
 
@@ -78,7 +82,7 @@ it needs no other plugin installed.
 | `rearmPercent` | `5` | Log again after this many percentage-point rise |
 | `rearmTokens` | `5000` | Log again after this many more tokens |
 | `verbose` | `false` | Log every context warning to the service log |
-| `message` | — | Template with the placeholders `{usage}`, `{percent}`, `{tokens}`, `{window}` |
+| `message` | — | Template with the placeholders `{usage}`, `{percent}`, `{tokens}`, `{window}`; the default tells the agent to call `compact_context` |
 
 Either band can fire first, and either can be disabled with `null`. The percent
 band needs a known window; without one only the token band applies and `{usage}`
@@ -102,6 +106,10 @@ log or a terminal run.
 - On every model request over a threshold it appends a synthetic user message to
   that request. The message is never stored, which is why it is added on every
   above-threshold request rather than only the first.
+- It registers a `compact_context` tool when the host supports tool registration.
+  The tool takes only `message`; it reads the calling session from the tool
+  context, admits a compaction with `session.compact`, then posts the text as a
+  steer prompt with `session.prompt`. Conflicts return a short failure result.
 - It listens for `session.compaction.started`, `session.compaction.ended`, and
   `session.compaction.failed`. Warnings are suppressed while compaction runs,
   and the pre-compaction sample and rearm state are dropped when it ends or
@@ -127,13 +135,15 @@ Two limits worth knowing:
   cannot warn, because the pre-compaction sample is dropped. That is fine for a
   "wrap up soon" hint, and it is why the plugin does not ask OpenCode to
   re-serialize the transcript on every request.
-- Compaction is opencode's job. The plugin adds no tool of its own.
+- OpenCode performs the compaction; the plugin only admits it. The continuation
+  text is a durable steer message after the checkpoint, unlike the transient
+  warning.
 
 ## Docs
 
 - [Design and Technical Reference](docs/design.md) — runtime contracts, event ordering, the threshold model, and error handling
 - [Architecture decisions](docs/decisions/) — the ADR series, including why the plugin is V2-only
-- [Agent and development guide](AGENTS.md) — build commands, `./dev.sh all`, and the verified OpenCode 2.0.16 facts
+- [Agent and development guide](AGENTS.md) — build commands, `./dev.sh all`, and the verified OpenCode runtime facts
 - [Commit and changelog conventions](docs/dev/commit-changelog.md) — how commits turn into release notes
 
 ## License

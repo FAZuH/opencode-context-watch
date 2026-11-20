@@ -28,7 +28,12 @@ describe("compactCount", () => {
 describe("contextLine", () => {
 	test("percent and sizes when the window is known", () => {
 		expect(
-			contextLine({ ...base, tokens: 394_000, window: 1_000_000, percent: 39.4 }),
+			contextLine({
+				...base,
+				tokens: 394_000,
+				window: 1_000_000,
+				percent: 39.4,
+			}),
 		).toBe("39% · 394k/1M · warn 80%");
 	});
 

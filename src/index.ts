@@ -1,3 +1,4 @@
+import { compactContextTool } from "./compact";
 import { resolveOptions } from "./config";
 import {
 	type LastWarned,
@@ -11,6 +12,7 @@ import { Contract } from "./rpc";
 import { contextStatus } from "./status";
 import type {
 	PluginContext,
+	Registration,
 	RpcRegistration,
 	StepEndedData,
 	StepTokens,
@@ -192,6 +194,18 @@ export default {
 			}
 		})();
 
+		let toolRegistration: Registration | undefined;
+		if (typeof ctx.tool?.transform === "function") {
+			try {
+				toolRegistration = await ctx.tool.transform((editor) => {
+					editor.add(compactContextTool(ctx.session));
+				});
+			} catch (err) {
+				// The warning must still work on hosts that cannot register tools.
+				console.error(`${PREFIX} tool registration failed:`, err);
+			}
+		}
+
 		const registration = await ctx.session
 			.hook("context", (event) => {
 				if (compacting.has(event.sessionID)) return;
@@ -227,14 +241,16 @@ export default {
 				);
 			})
 			.catch((err: unknown) => {
-				// A rejected registration must not leave the event stream running
-				// with nothing to dispose it.
+				// A rejected registration must not leave the event stream or the
+				// tool registration running with nothing to dispose them.
 				cancel.abort();
+				toolRegistration?.dispose();
 				throw err;
 			});
 
 		return () => {
 			cancel.abort();
+			toolRegistration?.dispose();
 			registration.dispose();
 		};
 	},
