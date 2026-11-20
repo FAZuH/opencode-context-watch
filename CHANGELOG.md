@@ -1,3 +1,10 @@
+## [1.0.7](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.6...v1.0.7) (2026-11-20)
+
+
+### Features
+
+* **plugin:** add single-call compact_context tool ([81c284d](https://github.com/FAZuH/opencode-context-watch/commit/81c284d33daae33ac11b4b6d1dc6cad2d983c93f))
+
 ## [1.0.6](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.5...v1.0.6) (2026-11-17)
 
 
@@ -26,11 +33,4 @@
 ### Bug Fixes
 
 * **plugin:** declare the TUI runtime dependencies ([fa3cdde](https://github.com/FAZuH/opencode-context-watch/commit/fa3cdded45079f12b5cef358d608b31265ab71c2))
-
-## [1.0.2](https://github.com/FAZuH/opencode-context-watch/compare/v1.0.1...v1.0.2) (2026-11-10)
-
-
-### Bug Fixes
-
-* **plugin:** drop the extra top margin on the sidebar section ([5e8f133](https://github.com/FAZuH/opencode-context-watch/commit/5e8f133f21f14d0ada7a8d265c65b309b0d58858))
 
